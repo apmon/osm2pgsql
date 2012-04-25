@@ -27,36 +27,37 @@ static int scale;
 
 
 static int writeout_dirty_nodes(osmid_t id) {
-	if (append_mode == 0) {
-		if (writeNodeBlock.dirty > 0) {
-			if (write(node_cache_fd, writeNodeBlock.nodes, WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-					< WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode)) {
-				fprintf(stderr, "Failed to write out node cache: %s\n", strerror(errno));
-				exit(1);
-			}
-			writeNodeBlock.used = 0;
-			writeNodeBlock.dirty = 0;
-			lseek64(node_cache_fd, 0, SEEK_SET);
-			if (write(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader)) != sizeof(struct persistentCacheHeader)) {
-				fprintf(stderr, "Failed to update persistent cache header: %s\n", strerror(errno));
-				exit(1);
-			}
+
+	if (writeNodeBlock.dirty > 0) {
+		lseek64(node_cache_fd, (writeNodeBlock.block_offset << WRITE_NODE_BLOCK_SHIFT) * sizeof(struct ramNode) + sizeof(struct persistentCacheHeader), SEEK_SET);
+		if (write(node_cache_fd, writeNodeBlock.nodes, WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
+				< WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode)) {
+			fprintf(stderr, "Failed to write out node cache: %s\n", strerror(errno));
+			exit(1);
 		}
-	} else {
-		if (id < 0) {
-			for (int i = 0; i < READ_NODE_CACHE_SIZE; i++) {
-				if (readNodeBlockCache[i].dirty) {
-					lseek64(node_cache_fd, (readNodeBlockCache[i].block_offset << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode) + sizeof(struct persistentCacheHeader), SEEK_SET);
-					if (write(node_cache_fd, readNodeBlockCache[i].nodes, READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-							< READ_NODE_BLOCK_SIZE * sizeof(struct ramNode)) {
-						fprintf(stderr, "Failed to write out node cache: %s\n", strerror(errno));
-						exit(1);
-					}
-				}
-				readNodeBlockCache[i].dirty = 0;
-			}
+		cacheHeader.max_initialised_id = ((writeNodeBlock.block_offset + 1) << WRITE_NODE_BLOCK_SHIFT) - 1;
+		writeNodeBlock.used = 0;
+		writeNodeBlock.dirty = 0;
+		lseek64(node_cache_fd, 0, SEEK_SET);
+		if (write(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader)) != sizeof(struct persistentCacheHeader)) {
+			fprintf(stderr, "Failed to update persistent cache header: %s\n", strerror(errno));
+			exit(1);
 		}
 	}
+	if (id < 0) {
+		for (int i = 0; i < READ_NODE_CACHE_SIZE; i++) {
+			if (readNodeBlockCache[i].dirty) {
+				lseek64(node_cache_fd, (readNodeBlockCache[i].block_offset << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode) + sizeof(struct persistentCacheHeader), SEEK_SET);
+				if (write(node_cache_fd, readNodeBlockCache[i].nodes, READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
+						< READ_NODE_BLOCK_SIZE * sizeof(struct ramNode)) {
+					fprintf(stderr, "Failed to write out node cache: %s\n", strerror(errno));
+					exit(1);
+				}
+			}
+			readNodeBlockCache[i].dirty = 0;
+		}
+	}
+
 }
 
 static void ramNodes_clear(struct ramNode * nodes, int size) {
@@ -124,6 +125,11 @@ static int persistent_cache_load_block(osmid_t block_offset) {
 			}
 		}
 		cacheHeader.max_initialised_id = ((block_offset + 1) << READ_NODE_BLOCK_SHIFT) - 1;
+		lseek64(node_cache_fd, 0, SEEK_SET);
+		if (write(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader)) != sizeof(struct persistentCacheHeader)) {
+			fprintf(stderr, "Failed to update persistent cache header: %s\n", strerror(errno));
+			exit(1);
+		}
 	}
 
 	//Read the block into cache
@@ -133,6 +139,7 @@ static int persistent_cache_load_block(osmid_t block_offset) {
 		fprintf(stderr, "Failed to read from node cache: %s\n", strerror(errno));
 		exit(1);
 	}
+    //    fprintf(stderr, "Load block %i %i\n", block_id, block_offset);
 
 	return block_id;
 }
@@ -151,7 +158,7 @@ int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon) {
 			writeNodeBlock.dirty = 0;
 			//After writing out the node block, the file pointer is at the next block level
 			writeNodeBlock.block_offset++;
-			cacheHeader.max_initialised_id = writeNodeBlock.block_offset << WRITE_NODE_BLOCK_SHIFT - 1;
+			cacheHeader.max_initialised_id = (writeNodeBlock.block_offset << WRITE_NODE_BLOCK_SHIFT) - 1;
 		}
 		if (writeNodeBlock.block_offset > block_offset) {
 			fprintf(stderr, "ERROR: Block_offset not in sequential order: %i %i\n", writeNodeBlock.block_offset, block_offset);
@@ -214,7 +221,10 @@ int persistent_cache_nodes_get(struct osmNode *out, osmid_t id) {
 
 	osmid_t block_id = persistent_cache_find_block(block_offset);
 
-	if (block_id < 0) block_id = persistent_cache_load_block(block_offset);
+	if (block_id < 0) {
+		writeout_dirty_nodes(id);
+		block_id = persistent_cache_load_block(block_offset);
+	}
 
 	readNodeBlockCache[block_id].used++;
 
@@ -295,6 +305,8 @@ void init_node_persistent_cache(int mode, int fixpointscale) {
 		exit(1);
 	}
 
+	fprintf(stderr,"Maximum node in persistent node cache: %li\n", cacheHeader.max_initialised_id);
+
 	readNodeBlockCache = malloc(READ_NODE_CACHE_SIZE*sizeof(struct ramNodeBlock));
 	for (int i = 0 ; i < READ_NODE_CACHE_SIZE; i++) {
 		readNodeBlockCache[i].nodes = malloc(READ_NODE_BLOCK_SIZE * sizeof(struct ramNode));
@@ -312,6 +324,7 @@ void shutdown_node_persistent_cache() {
 		fprintf(stderr, "Failed to update persistent cache header: %s\n", strerror(errno));
 		exit(1);
 	}
+	fprintf(stderr,"Maximum node in persistent node cache: %li\n", cacheHeader.max_initialised_id);
 
 	fsync(node_cache_fd);
 
