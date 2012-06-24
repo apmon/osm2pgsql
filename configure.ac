@@ -91,6 +91,10 @@ AC_SUBST([GAZETTEER_SUBDIR])
 dnl Check for pthread library
 AX_PTHREAD(,[AC_MSG_ERROR([no])])
 
+dnl Check for librt which we need for Asynch IO
+AC_CHECK_LIB(rt, aio_read, [AIOLIB="-lrt"])
+AC_SUBST(AIOLIB)
+
 
 dnl Generate Makefile
 AC_OUTPUT(Makefile legacy/Makefile gazetteer/Makefile)

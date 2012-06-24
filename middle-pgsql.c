@@ -433,18 +433,79 @@ static int pgsql_nodes_get(struct osmNode *out, osmid_t id)
 	if( ram_cache_nodes_get( out, id ) == 0 )
 		return 0;
 
+	//fprintf(stderr, "Get node %i\n", id);
+
 	return persistent_cache_nodes_get(out, id);
 }
 
 static int pgsql_nodes_get_list(struct osmNode *nodes, osmid_t *ndids, int nd_count)
 {
-	int count = 0, i;
-	for( i=0; i<nd_count; i++ )
-	{
-		if( pgsql_nodes_get( &nodes[count], ndids[i] ) == 0 )
-			count++;
-	}
-	return count;
+    int count, count2, countDB, countPG, i,j;
+    osmid_t id;
+    osmid_t *ndidspg;
+    struct osmNode *nodespg;
+    struct osmNode *nodes2;
+    char const *paramValues[1];
+
+    count = 0; countDB = 0;
+
+    ndidspg = malloc(sizeof(osmid_t)*nd_count);
+    nodespg = malloc(sizeof(struct osmNode)*nd_count);
+
+    for( i=0; i<nd_count; i++ ) {
+        /* Check cache first */
+        if( ram_cache_nodes_get( &nodes[i], ndids[i]) == 0 ) {
+            count++;
+            continue;
+        }
+
+        /* Mark nodes as needing to be fetched from the DB */
+        nodes[i].lat = NAN;
+        nodes[i].lon = NAN;
+        ndidspg[countDB] = ndids[i];
+        countDB++;
+    }
+
+    if (countDB == 0) {
+        return count; /* All ids where in cache, so nothing more to do */
+    }
+
+    persistent_cache_nodes_get_list(nodespg,ndidspg, countDB);
+
+    /* The list of results coming back from the db is in a different order to the list of nodes in the way.
+       Match the results back to the way node list */
+
+    for (i=0; i<nd_count; i++ )	{
+        if ((isnan(nodes[i].lat)) || (isnan(nodes[i].lon))) {
+            /* TODO: implement an O(log(n)) algorithm to match node ids */
+            for (j = 0; j < nd_count; j++) {
+                if ((ndidspg[j] == ndids[i]) && !isnan(nodespg[j].lat) && !(isnan(nodespg[j].lon))) {
+                    nodes[i].lat = nodespg[j].lat;
+                    nodes[i].lon = nodespg[j].lon;
+                    count++;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* If some of the nodes in the way don't exist, the returning list has holes.
+       As the rest of the code expects a continous list, it needs to be re-compacted */
+    if (count != nd_count) {
+        j = 0;
+        for (i = 0; i < nd_count; i++) {
+            if ( !isnan(nodes[i].lat)) {
+                nodes[j].lat = nodes[i].lat;
+                nodes[j].lon = nodes[i].lon;
+                j++;
+            }
+         }
+    }
+
+    free(ndidspg);
+    free(nodespg);
+
+    return count;
 }
 
 static int pgsql_nodes_delete(osmid_t osm_id)
