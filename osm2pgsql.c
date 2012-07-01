@@ -218,6 +218,7 @@ static void long_usage(char *arg0)
     printf("      --flat-nodes\tSpecifies the flat file to use to persistently store node information in slim mode instead of in pgsql\n");
     printf("                  \t\tThis file is a single > 16Gb large file. This method is only recomended for full planet imports\n");
     printf("                   \t\tas it doesn't work well with small extracts. The default is disabled\n");
+    printf("      --exclude-invalid-polygon\t");
     printf("   -h|--help\t\tHelp information.\n");
     printf("   -v|--verbose\t\tVerbose output.\n");
     printf("\n");
@@ -360,6 +361,7 @@ int main(int argc, char *argv[])
     int num_procs = 1;
     int droptemp = 0;
     int unlogged = 0;
+    int excludepoly = 0;
     const char *expire_tiles_filename = "dirty_tiles";
     const char *db = "gis";
     const char *username=NULL;
@@ -433,6 +435,7 @@ int main(int argc, char *argv[])
             {"drop", 0, 0, 206},
             {"unlogged", 0, 0, 207},
             {"flat-nodes",1,0,209},
+            {"exclude-invalid-polygon",0,0,210},
             {0, 0, 0, 0}
         };
 
@@ -503,6 +506,7 @@ int main(int argc, char *argv[])
             	flat_node_cache_enabled = 1;
             	flat_nodes_file = optarg;
             	break;
+            case 210: excludepoly = 1; exclude_broken_polygon(); break;
             case 'V': exit(EXIT_SUCCESS);
             case '?':
             default:
@@ -611,6 +615,7 @@ int main(int argc, char *argv[])
     options.unlogged = unlogged;
     options.flat_node_cache_enabled = flat_node_cache_enabled;
     options.flat_node_file = flat_nodes_file;
+    options.excludepoly = excludepoly;
 
     if (strcmp("pgsql", output_backend) == 0) {
       osmdata.out = &out_pgsql;
