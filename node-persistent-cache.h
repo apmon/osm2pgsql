@@ -17,9 +17,8 @@ struct persistentCacheHeader {
     osmid_t max_initialised_id;
 };
 
-int persistent_cache_nodes_set_append(osmid_t id, double lat, double lon);
-int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon);
+int persistent_cache_nodes_set(osmid_t id, double lat, double lon);
 int persistent_cache_nodes_get(struct osmNode *out, osmid_t id);
 int persistent_cache_nodes_get_list(struct osmNode *nodes, osmid_t *ndids, int nd_count);
-void init_node_persistent_cache(int mode, int fixpointscale);
+void init_node_persistent_cache(const struct output_options *options);
 void shutdown_node_persistent_cache();
