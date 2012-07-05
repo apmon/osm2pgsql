@@ -745,6 +745,8 @@ static void pgsql_iterate_ways(int (*callback)(osmid_t id, struct keyval *tags, 
     /* Make sure we're out of copy mode */
     pgsql_endCopy( way_table );
     
+    if (out_options->flat_node_cache_enabled) shutdown_node_persistent_cache();
+
     res_ways = pgsql_execPrepared(way_table->sql_conn, "pending_ways", 0, NULL, PGRES_TUPLES_OK);
 
     
@@ -769,6 +771,8 @@ static void pgsql_iterate_ways(int (*callback)(osmid_t id, struct keyval *tags, 
     } else {
         p = 0;
     }
+
+    if (out_options->flat_node_cache_enabled) init_node_persistent_cache(out_options);
 
     /* Only start an extended transaction on the ways table,
      * which should cover the bulk of the update statements.
@@ -823,6 +827,7 @@ static void pgsql_iterate_ways(int (*callback)(osmid_t id, struct keyval *tags, 
     if ((pid == 0) && (noProcs > 1)) {
         pgsql_cleanup();
         out_options->out->close(1);
+        if (out_options->flat_node_cache_enabled) shutdown_node_persistent_cache();
         exit(0);
     } else {
         for (p = 0; p < noProcs; p++) wait(NULL);
@@ -1014,6 +1019,8 @@ static void pgsql_iterate_relations(int (*callback)(osmid_t id, struct member *m
     /* Make sure we're out of copy mode */
     pgsql_endCopy( rel_table );
     
+    if (out_options->flat_node_cache_enabled) shutdown_node_persistent_cache();
+
     res_rels = pgsql_execPrepared(rel_table->sql_conn, "pending_rels", 0, NULL, PGRES_TUPLES_OK);
 
     fprintf(stderr, "\nUsing %i helper-processes\n", noProcs);
@@ -1032,6 +1039,8 @@ static void pgsql_iterate_relations(int (*callback)(osmid_t id, struct member *m
     } else {
         p = 0;
     }
+
+    if (out_options->flat_node_cache_enabled) init_node_persistent_cache(out_options);
 
     //fprintf(stderr, "\nIterating ways\n");
     for (i = p; i < PQntuples(res_rels); i+= noProcs) {
@@ -1062,6 +1071,7 @@ static void pgsql_iterate_relations(int (*callback)(osmid_t id, struct member *m
     if ((pid == 0) && (noProcs > 1)) {
         pgsql_cleanup();
         out_options->out->close(0);
+        if (out_options->flat_node_cache_enabled) shutdown_node_persistent_cache();
         exit(0);
     } else {
         for (p = 0; p < noProcs; p++) wait(NULL);
