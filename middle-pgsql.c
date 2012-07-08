@@ -1036,6 +1036,7 @@ static int pgsql_start(const struct output_options *options)
     PGresult   *res;
     int i;
     int dropcreate = !options->append;
+    char * sql;
 
     scale = options->scale;
     Append = options->append;
@@ -1118,7 +1119,11 @@ static int pgsql_start(const struct output_options *options)
 
             if (options->append)
             {
-                res = PQexec(sql_conn, "select id from planet_osm_nodes limit 1" );
+                sql = malloc (2048);
+                snprintf(sql, 2047, "SELECT id FROM %s LIMIT 1", tables[t_node].name);
+                res = PQexec(sql_conn, sql );
+                free(sql);
+                sql = NULL;
                 if(PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
                 {
                     int size = PQfsize(res, 0);
