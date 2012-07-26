@@ -20,7 +20,7 @@
 #include "binarysearcharray.h"
 
 static int node_cache_fd;
-static char * node_cache_fname;
+static const char * node_cache_fname;
 static int append_mode;
 
 struct persistentCacheHeader cacheHeader;
@@ -415,7 +415,7 @@ static int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon)
         if (writeNodeBlock.block_offset > block_offset)
         {
             fprintf(stderr,
-                    "ERROR: Block_offset not in sequential order: %i %i\n",
+                    "ERROR: Block_offset not in sequential order: %" PRIdOSMID "%" PRIdOSMID "\n",
                     writeNodeBlock.block_offset, block_offset);
             exit_nicely();
         }
@@ -596,11 +596,11 @@ int persistent_cache_nodes_get_list(struct osmNode *nodes, osmid_t *ndids,
     return count;
 }
 
-void init_node_persistent_cache(const struct output_options *options)
+void init_node_persistent_cache(const struct output_options *options, int append)
 {
     int i;
     scale = options->scale;
-    append_mode = options->append;
+    append_mode = append;
     node_cache_fname = options->flat_node_file;
     fprintf(stderr, "Mid: loading persistent node cache from %s\n",
             node_cache_fname);
