@@ -221,9 +221,9 @@ static int persistent_cache_find_block(osmid_t block_offset)
 /**
  * Initialise the persistent cache with NaN values to identify which IDs are valid or not
  */
-static void persistent_cache_expand_cache(int block_offset)
+static void persistent_cache_expand_cache(osmid_t block_offset)
 {
-    int i;
+    osmid_t i;
     wait_for_outstanding_io();
     struct ramNode * dummyNodes = malloc(
             READ_NODE_BLOCK_SIZE * sizeof(struct ramNode));
