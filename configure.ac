@@ -1,5 +1,5 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_INIT(osm2pgsql, 0.80.0)
+AC_INIT(osm2pgsql, 0.81.0)
 
 dnl Required autoconf version
 AC_PREREQ(2.61)
@@ -19,6 +19,7 @@ AC_CONFIG_MACRO_DIR([m4])
 dnl Generate configuration header file
 AC_CONFIG_HEADER(config.h)
 
+AC_GNU_SOURCE
 AC_HEADER_SYS_WAIT
 AC_FUNC_MMAP
 
@@ -36,19 +37,14 @@ fi
 dnl Make sure we have libtool installed
 AM_PROG_LIBTOOL
 
-AC_CHECK_HEADERS([aio.h])
 AC_CHECK_FUNC(lseek64,[AC_DEFINE(HAVE_LSEEK64, [1], [lseek64 is present])],[AX_COMPILE_CHECK_SIZEOF(off_t)])
-AC_CHECK_FUNCS([posix_fallocate])
+AC_CHECK_FUNCS([posix_fallocate posix_fadvise sync_file_range])
 
-dnl Check for librt which we need for Asynch IO
-AC_SEARCH_LIBS([aio_read64], [aio rt posix4], [AC_DEFINE(HAVE_AIO, [1], [AIO is present])])
 
-dnl optional 64bit ID mode
+dnl legacy 32bit ID mode
 AC_ARG_ENABLE([64bit-ids],
-    AS_HELP_STRING([--enable-64bit-ids], [Enable 64bit IDs for OSM IDs]))
-AS_IF([test "x$enable_64bit_ids" = "xyes"], [
-  AC_DEFINE(OSMID64, [1], [Enable 64bit OSM IDs])
-])
+    AS_HELP_STRING([--disable-64bit-ids], [Disable 64bit IDs for OSM IDs]), 
+    [], [ AC_DEFINE(OSMID64, [1], [Enable 64bit OSM IDs])])
 
 
 dnl Check for libxml2 library

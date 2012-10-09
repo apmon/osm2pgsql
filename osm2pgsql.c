@@ -197,6 +197,7 @@ static void long_usage(char *arg0)
     printf("   -K|--keep-coastlines\tKeep coastline data rather than filtering it out.\n");
     printf("              \t\tBy default natural=coastline tagged data will be discarded based on the\n");
     printf("              \t\tassumption that post-processed Coastline Checker shapefiles will be used.\n");
+    printf("      --exclude-invalid-polygon\n");
     printf("      --number-processes\t\tSpecifies the number of parallel processes used for certain operations\n");
     printf("             \t\tDefault is 1\n");
     printf("   -I|--disable-parallel-indexing\tDisable indexing all tables concurrently.\n");
@@ -213,7 +214,7 @@ static void long_usage(char *arg0)
     printf("                      \t\t   The default is \"optimized\"\n");
 #else
     /* use "chunked" as a default in 32 bit compilations, as it is less wasteful of virtual memory than "optimized"*/
-    printf("                      \t\t   The default is \"chunked\"\n");
+    printf("                      \t\t   The default is \"sparse\"\n");
 #endif
     printf("      --flat-nodes\tSpecifies the flat file to use to persistently store node information in slim mode instead of in pgsql\n");
     printf("                  \t\tThis file is a single > 16Gb large file. This method is only recomended for full planet imports\n");
@@ -355,11 +356,12 @@ int main(int argc, char *argv[])
 #ifdef __amd64__
     int alloc_chunkwise = ALLOC_SPARSE | ALLOC_DENSE;
 #else
-    int alloc_chunkwise = ALLOC_DENSE_CHUNK | ALLOC_DENSE;
+    int alloc_chunkwise = ALLOC_SPARSE;
 #endif
     int num_procs = 1;
     int droptemp = 0;
     int unlogged = 0;
+    int excludepoly = 0;
     const char *expire_tiles_filename = "dirty_tiles";
     const char *db = "gis";
     const char *username=NULL;
@@ -433,6 +435,7 @@ int main(int argc, char *argv[])
             {"drop", 0, 0, 206},
             {"unlogged", 0, 0, 207},
             {"flat-nodes",1,0,209},
+            {"exclude-invalid-polygon",0,0,210},
             {0, 0, 0, 0}
         };
 
@@ -503,6 +506,7 @@ int main(int argc, char *argv[])
             	flat_node_cache_enabled = 1;
             	flat_nodes_file = optarg;
             	break;
+            case 210: excludepoly = 1; exclude_broken_polygon(); break;
             case 'V': exit(EXIT_SUCCESS);
             case '?':
             default:
@@ -536,7 +540,7 @@ int main(int argc, char *argv[])
         unlogged = 0;
     }
 
-    if (enable_hstore == HSTORE_NONE && hstore_match_only)
+    if (enable_hstore == HSTORE_NONE && !n_hstore_columns && hstore_match_only)
     {
         fprintf(stderr, "Warning: --hstore-match-only only makes sense with --hstore, --hstore-all, or --hstore-column; ignored.\n");
         hstore_match_only = 0;
@@ -611,6 +615,7 @@ int main(int argc, char *argv[])
     options.unlogged = unlogged;
     options.flat_node_cache_enabled = flat_node_cache_enabled;
     options.flat_node_file = flat_nodes_file;
+    options.excludepoly = excludepoly;
 
     if (strcmp("pgsql", output_backend) == 0) {
       osmdata.out = &out_pgsql;
