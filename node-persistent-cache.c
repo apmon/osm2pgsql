@@ -13,22 +13,22 @@
 #include <fcntl.h>
 #include <math.h>
 
-#ifdef HAVE_AIO
-#include <aio.h>
-#endif
-
 #include "osmtypes.h"
 #include "output.h"
 #include "node-persistent-cache.h"
 #include "node-ram-cache.h"
 #include "binarysearcharray.h"
 
-#ifndef HAVE_LSEEK64
-#if SIZEOF_OFF_T == 8
-#define lseek64 lseek
+#ifdef __APPLE__
+  #define lseek64 lseek
 #else
-#error Flat nodes cache requires a 64 bit capable seek
-#endif
+  #ifndef HAVE_LSEEK64
+  #if SIZEOF_OFF_T == 8
+  #define lseek64 lseek
+  #else
+  #error Flat nodes cache requires a 64 bit capable seek
+  #endif
+  #endif
 #endif
 
 static int node_cache_fd;
@@ -36,87 +36,13 @@ static const char * node_cache_fname;
 static int append_mode;
 
 struct persistentCacheHeader cacheHeader;
-static struct ramNodeBlock writeNodeBlock; //larger node block for more efficient initial sequential writing of node cache
+static struct ramNodeBlock writeNodeBlock; /* larger node block for more efficient initial sequential writing of node cache */
 static struct ramNodeBlock * readNodeBlockCache;
 static struct binary_search_array * readNodeBlockCacheIdx;
-static struct binary_search_array * inflightIOPSIdx;
-
-#ifdef HAVE_AIO
-struct aiops
-{
-    struct aiocb64 * iops;
-    int block_id;
-    osmid_t block_offset;
-};
-struct aiops * inflight_iops;
-int no_inflight_iops = 0;
-#endif
 
 
 static int scale;
 static int cache_already_written = 0;
-static int use_async_io = 0;
-
-/**
- * Function blocks until all outstanding async I/O has completed
- */
-static void wait_for_outstanding_io()
-{
-#ifdef HAVE_AIO
-    int i;
-    int allfinished = 0;
-
-    if (no_inflight_iops == 0)
-        return;
-
-    while (allfinished == 0)
-    {
-        allfinished = 1;
-        for (i = 0; i < no_inflight_iops; i++)
-        {
-            int err = aio_error64(inflight_iops[i].iops);
-            if (err == 0)
-            { // IO has successfully completed
-                if (inflight_iops[i].block_id >= 0)
-                {
-                    readNodeBlockCache[inflight_iops[i].block_id].block_offset =
-                            inflight_iops[i].block_offset;
-                    binary_search_add(readNodeBlockCacheIdx,
-                            readNodeBlockCache[inflight_iops[i].block_id].block_offset,
-                            inflight_iops[i].block_id);
-                    readNodeBlockCache[inflight_iops[i].block_id].used =
-                            READ_NODE_CACHE_SIZE;
-                }
-                binary_search_remove(inflightIOPSIdx,
-                        inflight_iops[i].block_offset);
-                free(inflight_iops[i].iops);
-                inflight_iops[i].block_id = -1;
-                inflight_iops[i].iops = NULL;
-                memmove(&(inflight_iops[i]), &(inflight_iops[i + 1]),
-                        sizeof(struct aiops) * (128 - i - 2));
-                no_inflight_iops--;
-            }
-            else if (err == EINPROGRESS)
-            {
-                allfinished = 0;
-                const struct aiocb64 *aio_list[1] =
-                { inflight_iops[i].iops };
-                aio_suspend64(aio_list, 1, 0); //Block on one of the outstanding I/O requests. Doesn't really matter on which one.
-                if (aio_error64(inflight_iops[i].iops) != 0)
-                {
-                    fprintf(stderr, "Not finished as expected!\n");
-                    exit_nicely();
-                }
-            }
-            else
-            {
-                fprintf(stderr, "Something went wrong!");
-                exit_nicely();
-            }
-        }
-    }
-#endif
-}
 
 
 static void writeout_dirty_nodes(osmid_t id)
@@ -125,11 +51,15 @@ static void writeout_dirty_nodes(osmid_t id)
 
     if (writeNodeBlock.dirty > 0)
     {
-        wait_for_outstanding_io();
-        lseek64(node_cache_fd,
+        if (lseek64(node_cache_fd,
                 (writeNodeBlock.block_offset << WRITE_NODE_BLOCK_SHIFT)
                         * sizeof(struct ramNode)
-                        + sizeof(struct persistentCacheHeader), SEEK_SET);
+                    + sizeof(struct persistentCacheHeader), SEEK_SET) < 0) {
+            fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                    strerror(errno));
+            exit_nicely();
+            
+        };
         if (write(node_cache_fd, writeNodeBlock.nodes,
                 WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
                 < WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
@@ -142,7 +72,11 @@ static void writeout_dirty_nodes(osmid_t id)
                 << WRITE_NODE_BLOCK_SHIFT) - 1;
         writeNodeBlock.used = 0;
         writeNodeBlock.dirty = 0;
-        lseek64(node_cache_fd, 0, SEEK_SET);
+        if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+            fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                    strerror(errno));
+            exit_nicely();
+        };
         if (write(node_cache_fd, &cacheHeader,
                 sizeof(struct persistentCacheHeader))
                 != sizeof(struct persistentCacheHeader))
@@ -151,21 +85,27 @@ static void writeout_dirty_nodes(osmid_t id)
                     strerror(errno));
             exit_nicely();
         }
-        fsync(node_cache_fd);
+        if (fsync(node_cache_fd) < 0) {
+            fprintf(stderr, "Info: Node cache could not be guaranteeded to be made durable. fsync failed: %s\n",
+                    strerror(errno));
+        };
     }
     if (id < 0)
     {
-        wait_for_outstanding_io();
         for (i = 0; i < READ_NODE_CACHE_SIZE; i++)
         {
             if (readNodeBlockCache[i].dirty)
             {
-                lseek64(node_cache_fd,
+                if (lseek64(node_cache_fd,
                         (readNodeBlockCache[i].block_offset
                                 << READ_NODE_BLOCK_SHIFT)
                                 * sizeof(struct ramNode)
                                 + sizeof(struct persistentCacheHeader),
-                        SEEK_SET);
+                            SEEK_SET) < 0) {
+                    fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                            strerror(errno));
+                    exit_nicely();
+                };
                 if (write(node_cache_fd, readNodeBlockCache[i].nodes,
                         READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
                         < READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
@@ -241,7 +181,6 @@ static int persistent_cache_find_block(osmid_t block_offset)
 static void persistent_cache_expand_cache(osmid_t block_offset)
 {
     osmid_t i;
-    wait_for_outstanding_io();
     struct ramNode * dummyNodes = malloc(
             READ_NODE_BLOCK_SIZE * sizeof(struct ramNode));
     if (!dummyNodes) {
@@ -249,10 +188,14 @@ static void persistent_cache_expand_cache(osmid_t block_offset)
         exit_nicely();
     }
     ramNodes_clear(dummyNodes, READ_NODE_BLOCK_SIZE);
-    //Need to expand the persistent node cache
-    lseek64(node_cache_fd,
+    /* Need to expand the persistent node cache */
+    if (lseek64(node_cache_fd,
             cacheHeader.max_initialised_id * sizeof(struct ramNode)
-                    + sizeof(struct persistentCacheHeader), SEEK_SET);
+                + sizeof(struct persistentCacheHeader), SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    };
     for (i = cacheHeader.max_initialised_id >> READ_NODE_BLOCK_SHIFT;
             i <= block_offset; i++)
     {
@@ -267,7 +210,11 @@ static void persistent_cache_expand_cache(osmid_t block_offset)
     }
     cacheHeader.max_initialised_id = ((block_offset + 1)
             << READ_NODE_BLOCK_SHIFT) - 1;
-    lseek64(node_cache_fd, 0, SEEK_SET);
+    if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    };
     if (write(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader))
             != sizeof(struct persistentCacheHeader))
     {
@@ -282,73 +229,25 @@ static void persistent_cache_expand_cache(osmid_t block_offset)
 
 static void persistent_cache_nodes_prefetch_async(osmid_t id)
 {
-#ifdef HAVE_AIO
+#ifdef HAVE_POSIX_FADVISE
     osmid_t block_offset = id >> READ_NODE_BLOCK_SHIFT;
 
     osmid_t block_id = persistent_cache_find_block(block_offset);
 
     if (block_id < 0)
-    { // The needed block isn't in cache already, so initiate loading
-        //fprintf(stderr,"Loading offset %i\n", block_offset);
-        if (binary_search_get(inflightIOPSIdx, block_offset) >= 0)
-            return;
-        if (no_inflight_iops > 30)
-            wait_for_outstanding_io();
+        {   /* The needed block isn't in cache already, so initiate loading */
         writeout_dirty_nodes(id);
 
-        //Make sure the node cache is correctly initialised for the block that will be read
+        /* Make sure the node cache is correctly initialised for the block that will be read */
         if (cacheHeader.max_initialised_id
                 < ((block_offset + 1) << READ_NODE_BLOCK_SHIFT))
-        {
             persistent_cache_expand_cache(block_offset);
-        }
 
-        int block_id = persistent_cache_replace_block(); //Lookup which cache block best to replace
-
-        // Make sure this block doesn't get reused whil async operation is in progress
-        readNodeBlockCache[block_id].used = 10 * READ_NODE_CACHE_SIZE;
-
-        if (readNodeBlockCache[block_id].dirty)
-        {
-            inflight_iops[no_inflight_iops].iops = calloc(
-                    sizeof(struct aiocb64), 1);
-            inflight_iops[no_inflight_iops].iops->aio_fildes = node_cache_fd;
-            inflight_iops[no_inflight_iops].iops->aio_offset =
-                    (readNodeBlockCache[block_id].block_offset
-                            << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode)
-                            + sizeof(struct persistentCacheHeader);
-            inflight_iops[no_inflight_iops].iops->aio_buf =
-                    readNodeBlockCache[block_id].nodes;
-            inflight_iops[no_inflight_iops].iops->aio_nbytes =
-                    READ_NODE_BLOCK_SIZE * sizeof(struct ramNode);
-            inflight_iops[no_inflight_iops].iops->aio_reqprio = 0;
-            inflight_iops[no_inflight_iops].block_id = -1;
-            aio_write64(inflight_iops[no_inflight_iops].iops);
-            no_inflight_iops++;
-            wait_for_outstanding_io();
-            readNodeBlockCache[block_id].dirty = 0;
-        }
-        binary_search_remove(readNodeBlockCacheIdx,
-                readNodeBlockCache[block_id].block_offset);
-        ramNodes_clear(readNodeBlockCache[block_id].nodes,
-                READ_NODE_BLOCK_SIZE);
-        readNodeBlockCache[block_id].block_offset = -1;
-        binary_search_add(inflightIOPSIdx, block_offset, 123456);
-        inflight_iops[no_inflight_iops].iops = calloc(sizeof(struct aiocb64),
-                1);
-        inflight_iops[no_inflight_iops].iops->aio_fildes = node_cache_fd;
-        inflight_iops[no_inflight_iops].iops->aio_offset = (block_offset
-                << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode)
-                + sizeof(struct persistentCacheHeader);
-        inflight_iops[no_inflight_iops].iops->aio_nbytes = READ_NODE_BLOCK_SIZE
-                * sizeof(struct ramNode);
-        inflight_iops[no_inflight_iops].iops->aio_buf =
-                readNodeBlockCache[block_id].nodes;
-        inflight_iops[no_inflight_iops].iops->aio_reqprio = 0;
-        inflight_iops[no_inflight_iops].block_id = block_id;
-        inflight_iops[no_inflight_iops].block_offset = block_offset;
-        aio_read64(inflight_iops[no_inflight_iops].iops);
-        no_inflight_iops++;
+        if (posix_fadvise(node_cache_fd, (block_offset << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode)
+                      + sizeof(struct persistentCacheHeader), READ_NODE_BLOCK_SIZE * sizeof(struct ramNode),
+                          POSIX_FADV_WILLNEED | POSIX_FADV_RANDOM) != 0) {
+            fprintf(stderr, "Info: async prefetch of node cache failed. This might reduce performance\n");
+        };
     }
 #endif
 }
@@ -364,10 +263,14 @@ static int persistent_cache_load_block(osmid_t block_offset)
 
     if (readNodeBlockCache[block_id].dirty)
     {
-        lseek64(node_cache_fd,
+        if (lseek64(node_cache_fd,
                 (readNodeBlockCache[block_id].block_offset
                         << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode)
-                        + sizeof(struct persistentCacheHeader), SEEK_SET);
+                    + sizeof(struct persistentCacheHeader), SEEK_SET) < 0) {
+            fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                    strerror(errno));
+            exit_nicely();
+        };
         if (write(node_cache_fd, readNodeBlockCache[block_id].nodes,
                 READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
                 < READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
@@ -385,17 +288,21 @@ static int persistent_cache_load_block(osmid_t block_offset)
     readNodeBlockCache[block_id].block_offset = block_offset;
     readNodeBlockCache[block_id].used = READ_NODE_CACHE_SIZE;
 
-    //Make sure the node cache is correctly initialised for the block that will be read
+    /* Make sure the node cache is correctly initialised for the block that will be read */
     if (cacheHeader.max_initialised_id
             < ((block_offset + 1) << READ_NODE_BLOCK_SHIFT))
     {
         persistent_cache_expand_cache(block_offset);
     }
 
-    //Read the block into cache
-    lseek64(node_cache_fd,
+    /* Read the block into cache */
+    if (lseek64(node_cache_fd,
             (block_offset << READ_NODE_BLOCK_SHIFT) * sizeof(struct ramNode)
-                    + sizeof(struct persistentCacheHeader), SEEK_SET);
+                + sizeof(struct persistentCacheHeader), SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    };
     if (read(node_cache_fd, readNodeBlockCache[block_id].nodes,
             READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
             != READ_NODE_BLOCK_SIZE * sizeof(struct ramNode))
@@ -410,6 +317,53 @@ static int persistent_cache_load_block(osmid_t block_offset)
     return block_id;
 }
 
+static void persisten_cache_nodes_set_create_writeout_block()
+{
+    if (write(node_cache_fd, writeNodeBlock.nodes,
+              WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
+        < WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
+    {
+        fprintf(stderr, "Failed to write out node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    }
+#ifdef HAVE_SYNC_FILE_RANGE
+    /* writing out large files can cause trouble on some operating systems.
+     * For one, if to much dirty data is in RAM, the whole OS can stall until
+     * enough dirty data is written out which can take a while. It can also interfere
+     * with outher disk caching operations and might push things out to swap. By forcing the OS to
+     * immediately write out the data and blocking after a while, we ensure that no more
+     * than a couple of 10s of MB are dirty in RAM at a time.
+     * Secondly, the nodes are stored in an additional ram cache during import. Keeping the
+     * node cache file in buffer cache therefore duplicates the data wasting 16GB of ram.
+     * Therefore tell the OS not to cache the node-persistent-cache during initial import.
+     * */
+    if (sync_file_range(node_cache_fd, writeNodeBlock.block_offset*WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode) +
+                        sizeof(struct persistentCacheHeader), WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode),
+                        SYNC_FILE_RANGE_WRITE) < 0) {
+        fprintf(stderr, "Info: Sync_file_range writeout has an issue. This shouldn't be anything to worry about.: %s\n",
+                strerror(errno));
+    };
+
+    if (writeNodeBlock.block_offset > 16) {
+        if(sync_file_range(node_cache_fd, (writeNodeBlock.block_offset - 16)*WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode) +
+                           sizeof(struct persistentCacheHeader), WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode),
+                            SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER) < 0) {
+            fprintf(stderr, "Info: Sync_file_range block has an issue. This shouldn't be anything to worry about.: %s\n",
+                strerror(errno));
+            
+        }
+#ifdef HAVE_POSIX_FADVISE
+        if (posix_fadvise(node_cache_fd, (writeNodeBlock.block_offset - 16)*WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode) +
+                          sizeof(struct persistentCacheHeader), WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode), POSIX_FADV_DONTNEED) !=0 ) {
+            fprintf(stderr, "Info: Posix_fadvise failed. This shouldn't be anything to worry about.: %s\n",
+                strerror(errno));
+        };
+#endif
+    }
+#endif
+}
+
 static int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon)
 {
     osmid_t block_offset = id >> WRITE_NODE_BLOCK_SHIFT;
@@ -422,17 +376,10 @@ static int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon)
     {
         if (writeNodeBlock.dirty)
         {
-            if (write(node_cache_fd, writeNodeBlock.nodes,
-                    WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-                    < WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-            {
-                fprintf(stderr, "Failed to write out node cache: %s\n",
-                        strerror(errno));
-                exit_nicely();
-            }
+            persisten_cache_nodes_set_create_writeout_block();
             writeNodeBlock.used = 0;
             writeNodeBlock.dirty = 0;
-            //After writing out the node block, the file pointer is at the next block level
+            /* After writing out the node block, the file pointer is at the next block level */
             writeNodeBlock.block_offset++;
             cacheHeader.max_initialised_id = (writeNodeBlock.block_offset
                     << WRITE_NODE_BLOCK_SHIFT) - 1;
@@ -445,18 +392,11 @@ static int persistent_cache_nodes_set_create(osmid_t id, double lat, double lon)
             exit_nicely();
         }
 
-        //We need to fill the intermediate node cache with node nodes to identify which nodes are valid
+        /* We need to fill the intermediate node cache with node nodes to identify which nodes are valid */
         for (i = writeNodeBlock.block_offset; i < block_offset; i++)
         {
             ramNodes_clear(writeNodeBlock.nodes, WRITE_NODE_BLOCK_SIZE);
-            if (write(node_cache_fd, writeNodeBlock.nodes,
-                    WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-                    < WRITE_NODE_BLOCK_SIZE * sizeof(struct ramNode))
-            {
-                fprintf(stderr, "Failed to write out node cache: %s\n",
-                        strerror(errno));
-                exit_nicely();
-            }
+            persisten_cache_nodes_set_create_writeout_block();
         }
 
         ramNodes_clear(writeNodeBlock.nodes, WRITE_NODE_BLOCK_SIZE);
@@ -519,7 +459,6 @@ int persistent_cache_nodes_set(osmid_t id, double lat, double lon)
 
 int persistent_cache_nodes_get(struct osmNode *out, osmid_t id)
 {
-    wait_for_outstanding_io();
     osmid_t block_offset = id >> READ_NODE_BLOCK_SHIFT;
 
     osmid_t block_id = persistent_cache_find_block(block_offset);
@@ -586,13 +525,12 @@ int persistent_cache_nodes_get_list(struct osmNode *nodes, osmid_t *ndids,
     if (count == nd_count)
         return count;
 
-    if (use_async_io) {
-        for (i = 0; i < nd_count; i++)
-        {
-            if (isnan(nodes[i].lat) && isnan(nodes[i].lon))
-                persistent_cache_nodes_prefetch_async(ndids[i]);
-        }
-        wait_for_outstanding_io();
+    for (i = 0; i < nd_count; i++)
+    {
+        /* In order to have a higher OS level I/O queue depth
+           issue posix_fadvise(WILLNEED) requests for all I/O */
+        if (isnan(nodes[i].lat) && isnan(nodes[i].lon))
+            persistent_cache_nodes_prefetch_async(ndids[i]);
     }
     for (i = 0; i < nd_count; i++)
     {
@@ -623,25 +561,15 @@ int persistent_cache_nodes_get_list(struct osmNode *nodes, osmid_t *ndids,
     return count;
 }
 
-void init_node_persistent_cache(const struct output_options *options, int append, int enable_async_io)
+void init_node_persistent_cache(const struct output_options *options, int append)
 {
     int i;
     scale = options->scale;
     append_mode = append;
     node_cache_fname = options->flat_node_file;
-    use_async_io = enable_async_io;
     fprintf(stderr, "Mid: loading persistent node cache from %s\n",
             node_cache_fname);
-    if (use_async_io) fprintf(stderr, "Mid: using async I/O for persistent node cache\n");
-    else fprintf(stderr, "Mid: not using async I/O for persistent node cache\n");
-#ifdef HAVE_AIO
-    inflight_iops = calloc(sizeof(struct aiops), 128);
-    if (!inflight_iops) {
-        fprintf(stderr, "Out of memory: Failed to allocate space for async IO operations\n");
-        exit_nicely();
-    }
-    inflightIOPSIdx = init_search_array(128);
-#endif
+
     readNodeBlockCacheIdx = init_search_array(READ_NODE_CACHE_SIZE);
     
     /* Setup the file for the node position cache */
@@ -673,7 +601,11 @@ void init_node_persistent_cache(const struct output_options *options, int append
                     strerror(errno));
             exit_nicely();
         }
-        lseek64(node_cache_fd, 0, SEEK_SET);
+        if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+            fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                    strerror(errno));
+            exit_nicely();
+        };
         if (cache_already_written == 0)
         {
 
@@ -702,7 +634,11 @@ void init_node_persistent_cache(const struct output_options *options, int append
             cacheHeader.format_version = PERSISTENT_CACHE_FORMAT_VERSION;
             cacheHeader.id_size = sizeof(osmid_t);
             cacheHeader.max_initialised_id = 0;
-            lseek64(node_cache_fd, 0, SEEK_SET);
+            if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+                fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                        strerror(errno));
+                exit_nicely();
+            };
             if (write(node_cache_fd, &cacheHeader,
                     sizeof(struct persistentCacheHeader))
                     != sizeof(struct persistentCacheHeader))
@@ -714,7 +650,11 @@ void init_node_persistent_cache(const struct output_options *options, int append
         }
 
     }
-    lseek64(node_cache_fd, 0, SEEK_SET);
+    if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    };
     if (read(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader))
             != sizeof(struct persistentCacheHeader))
     {
@@ -761,7 +701,11 @@ void shutdown_node_persistent_cache()
     int i;
     writeout_dirty_nodes(-1);
 
-    lseek64(node_cache_fd, 0, SEEK_SET);
+    if (lseek64(node_cache_fd, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed to seek to correct position in node cache: %s\n",
+                strerror(errno));
+        exit_nicely();
+    };
     if (write(node_cache_fd, &cacheHeader, sizeof(struct persistentCacheHeader))
             != sizeof(struct persistentCacheHeader))
     {
