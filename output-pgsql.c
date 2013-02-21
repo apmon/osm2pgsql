@@ -40,8 +40,9 @@
    style file with more styles than this */
 #define MAX_STYLES 1000
 
+#define POLY_SIZE_SPLIT 100000.0
 enum table_id {
-    t_point, t_line, t_poly, t_roads
+    t_point, t_line, t_poly, t_poly_small, t_poly_large, t_roads
 };
 
 static const struct output_options *Options;
@@ -59,6 +60,8 @@ static struct s_table {
     { .name = "%s_point",   .type = "POINT"     },
     { .name = "%s_line",    .type = "LINESTRING"},
     { .name = "%s_polygon", .type = "GEOMETRY"  }, /* Actually POLGYON & MULTIPOLYGON but no way to limit to just these two */
+    { .name = "%s_polygon_small", .type = "partitioning"},
+    { .name = "%s_polygon_large", .type = "partitioning"},
     { .name = "%s_roads",   .type = "LINESTRING"}
 };
 #define NUM_TABLES ((signed)(sizeof(tables) / sizeof(tables[0])))
@@ -88,8 +91,8 @@ struct taginfo {
     int count;
 };
 
-static struct taginfo *exportList[4]; /* Indexed by enum table_id */
-static int exportListCount[4];
+static struct taginfo *exportList[6]; /* Indexed by enum table_id */
+static int exportListCount[6];
 
 /* Data to generate z-order column and road table
  * The name of the roads table is misleading, this table
@@ -930,7 +933,10 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
                     snprintf(tmp, sizeof(tmp), "%f", area);
                     addItem(tags, "way_area", tmp, 0);
                 }
-                write_wkts(id, tags, wkt, t_poly);
+                if (area > POLY_SIZE_SPLIT) 
+                    write_wkts(id, tags, wkt, t_poly_large);
+                else
+                    write_wkts(id, tags, wkt, t_poly_small);
             } else {
                 expire_tiles_from_nodes_line(nodes, count);
                 write_wkts(id, tags, wkt, t_line);
@@ -1161,7 +1167,10 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, struct osmNod
                     snprintf(tmp, sizeof(tmp), "%f", area);
                     addItem(&tags, "way_area", tmp, 0);
                 }
-                write_wkts(-id, &tags, wkt, t_poly);
+                if (area > POLY_SIZE_SPLIT)
+                    write_wkts(-id, &tags, wkt, t_poly_large);
+                else
+                    write_wkts(-id, &tags, wkt, t_poly_small);
             } else {
                 write_wkts(-id, &tags, wkt, t_line);
                 if (roads)
@@ -1214,7 +1223,10 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, struct osmNod
                         snprintf(tmp, sizeof(tmp), "%f", area);
                         addItem(&tags, "way_area", tmp, 0);
                     }
-                    write_wkts(-id, &tags, wkt, t_poly);
+                    if (area > POLY_SIZE_SPLIT)
+                        write_wkts(-id, &tags, wkt, t_poly_large);
+                    else
+                        write_wkts(-id, &tags, wkt, t_poly_small);
                 }
             }
             free(wkt);
@@ -1288,7 +1300,7 @@ static int pgsql_out_start(const struct output_options *options)
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "SET synchronous_commit TO off;");
 
         if (!options->append) {
-            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE IF EXISTS %s", tables[i].name);
+            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE IF EXISTS %s CASCADE", tables[i].name);
         }
         else
         {
@@ -1311,54 +1323,67 @@ static int pgsql_out_start(const struct output_options *options)
         /* These _tmp tables can be left behind if we run out of disk space */
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE IF EXISTS %s_tmp", tables[i].name);
 
-        pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
+        
 
         type = (i == t_point)?OSMTYPE_NODE:OSMTYPE_WAY;
         numTags = exportListCount[type];
         exportTags = exportList[type];
         if (!options->append) {
-            sprintf(sql, "CREATE TABLE %s ( osm_id " POSTGRES_OSMID_TYPE, tables[i].name );
-            for (j=0; j < numTags; j++) {
-                if( exportTags[j].flags & FLAG_DELETE )
-                    continue;
-                if( (exportTags[j].flags & FLAG_PHSTORE ) == FLAG_PHSTORE)
-                    continue;
-                sprintf(tmp, ",\"%s\" %s", exportTags[j].name, exportTags[j].type);
-                if (strlen(sql) + strlen(tmp) + 1 > sql_len) {
-                    sql_len *= 2;
-                    sql = realloc(sql, sql_len);
-                    assert(sql);
+            if (tables[i].type == "partitioning") {
+                if (i == t_poly_large) {
+                    sprintf(sql, "CREATE TABLE %s ( CHECK( way_area > %f ) ) INHERITS (%s);", tables[i].name, POLY_SIZE_SPLIT, tables[t_poly].name );
+                    pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
+                } else {
+                    sprintf(sql, "CREATE TABLE %s ( CHECK( way_area <= %f ) ) INHERITS (%s);", tables[i].name, POLY_SIZE_SPLIT, tables[t_poly].name );
+                    pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
                 }
-                strcat(sql, tmp);
-            }
-            for(i_hstore_column = 0; i_hstore_column < Options->n_hstore_columns; i_hstore_column++)
-            {
-                strcat(sql, ",\"");
-                strcat(sql, Options->hstore_columns[i_hstore_column]);
-                strcat(sql, "\" hstore ");
-            }
-            if (Options->enable_hstore) {
-                strcat(sql, ",tags hstore");
-            } 
-            strcat(sql, ")");
-            if (Options->tblsmain_data) {
-                sprintf(sql + strlen(sql), " TABLESPACE %s", Options->tblsmain_data);
-            }
-            strcat(sql, "\n");
-
-            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
-            pgsql_exec(sql_conn, PGRES_TUPLES_OK, "SELECT AddGeometryColumn('%s', 'way', %d, '%s', 2 );\n",
-                        tables[i].name, SRID, tables[i].type );
-            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "ALTER TABLE %s ALTER COLUMN way SET NOT NULL;\n", tables[i].name);
-            /* slim mode needs this to be able to apply diffs */
-            if (Options->slim && !Options->droptemp) {
-                sprintf(sql, "CREATE INDEX %s_pkey ON %s USING BTREE (osm_id)",  tables[i].name, tables[i].name);
-                if (Options->tblsmain_index) {
-                    sprintf(sql + strlen(sql), " TABLESPACE %s\n", Options->tblsmain_index);
+                
+            } else {
+                sprintf(sql, "CREATE TABLE %s ( osm_id " POSTGRES_OSMID_TYPE, tables[i].name );
+                for (j=0; j < numTags; j++) {
+                    if( exportTags[j].flags & FLAG_DELETE )
+                        continue;
+                    if( (exportTags[j].flags & FLAG_PHSTORE ) == FLAG_PHSTORE)
+                        continue;
+                    sprintf(tmp, ",\"%s\" %s", exportTags[j].name, exportTags[j].type);
+                    if (strlen(sql) + strlen(tmp) + 1 > sql_len) {
+                        sql_len *= 2;
+                        sql = realloc(sql, sql_len);
+                        assert(sql);
+                    }
+                    strcat(sql, tmp);
                 }
-	            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
+                for(i_hstore_column = 0; i_hstore_column < Options->n_hstore_columns; i_hstore_column++)
+                    {
+                        strcat(sql, ",\"");
+                        strcat(sql, Options->hstore_columns[i_hstore_column]);
+                        strcat(sql, "\" hstore ");
+                    }
+                if (Options->enable_hstore) {
+                    strcat(sql, ",tags hstore");
+                } 
+                strcat(sql, ")");
+                if (Options->tblsmain_data) {
+                    sprintf(sql + strlen(sql), " TABLESPACE %s", Options->tblsmain_data);
+                }
+                strcat(sql, "\n");
+                
+                pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
+                pgsql_exec(sql_conn, PGRES_TUPLES_OK, "SELECT AddGeometryColumn('%s', 'way', %d, '%s', 2 );\n",
+                           tables[i].name, SRID, tables[i].type );
+                pgsql_exec(sql_conn, PGRES_COMMAND_OK, "ALTER TABLE %s ALTER COLUMN way SET NOT NULL;\n", tables[i].name);
+                /* slim mode needs this to be able to apply diffs */
+                if (Options->slim && !Options->droptemp) {
+                    sprintf(sql, "CREATE INDEX %s_pkey ON %s USING BTREE (osm_id)",  tables[i].name, tables[i].name);
+                    if (Options->tblsmain_index) {
+                        sprintf(sql + strlen(sql), " TABLESPACE %s\n", Options->tblsmain_index);
+                    }
+                    pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", sql);
+                }
             }
+            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
         } else {
+            pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
             /* Add any new columns referenced in the default.style */
             PGresult *res;
             sprintf(sql, "SELECT * FROM %s LIMIT 0;\n", tables[i].name);
@@ -1491,14 +1516,14 @@ static void *pgsql_out_stop_one(void *arg)
     }
 
     pgsql_pause_copy(table);
-    if (!Options->append)
+    if (!Options->append && (table->name != "planet_osm_polygon"))
     {
         time_t start, end;
         time(&start);
         fprintf(stderr, "Sorting data and creating indexes for %s\n", table->name);
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "ANALYZE %s;\n", table->name);
         fprintf(stderr, "Analyzing %s finished\n", table->name);
-        if (Options->tblsmain_data) {
+        /* if (Options->tblsmain_data) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "CREATE TABLE %s_tmp "
                         "TABLESPACE %s AS SELECT * FROM %s ORDER BY way;\n",
                         table->name, Options->tblsmain_data, table->name);
@@ -1508,12 +1533,15 @@ static void *pgsql_out_stop_one(void *arg)
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE %s;\n", table->name);
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "ALTER TABLE %s_tmp RENAME TO %s;\n", table->name, table->name);
         fprintf(stderr, "Copying %s to cluster by geometry finished\n", table->name);
+        */
         fprintf(stderr, "Creating geometry index on  %s\n", table->name);
         if (Options->tblsmain_index) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "CREATE INDEX %s_index ON %s USING GIST (way) TABLESPACE %s;\n", table->name, table->name, Options->tblsmain_index);
         } else {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "CREATE INDEX %s_index ON %s USING GIST (way);\n", table->name, table->name);
         }
+        fprintf(stderr, "Clustering by geometry index on  %s\n", table->name);
+        pgsql_exec(sql_conn, PGRES_COMMAND_OK, "CLUSTER %s USING %s_index;\n", table->name, table->name);
 
         /* slim mode needs this to be able to apply diffs */
         if (Options->slim && !Options->droptemp)
