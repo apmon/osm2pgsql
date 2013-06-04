@@ -22,6 +22,16 @@ struct taginfo {
     int count;
 };
 
+struct relation_info {
+    osmid_t id;
+    struct keyval * tags;
+    int member_count;
+    const char ** member_roles;
+    struct keyval * member_tags;
+    int * member_way_node_count;
+    struct osmNode ** member_way_nodes;
+    osmid_t * member_ids;
+};
 extern struct output_t out_pgsql;
 
 #endif

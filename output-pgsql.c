@@ -690,7 +690,24 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     return 0;
 }
 
-static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_count, struct osmNode **xnodes, struct keyval *xtags, int *xcount, osmid_t *xid, const char **xrole)
+static void free_rel_struct(struct relation_info * rel) {
+    int i;
+    for( i =0; i<rel->member_count; i++ ) {
+        resetList( &(rel->member_tags[i]) );
+        free( rel->member_way_nodes[i] );
+        //free( rel->member_roles[i]);
+    }
+
+    free(rel->member_ids);
+    free(rel->member_tags);
+    free(rel->member_way_node_count);
+    free(rel->member_way_nodes);
+    free(rel->member_roles);
+    resetList(rel->tags);
+    free(rel);
+}
+
+static int pgsql_out_relation(struct relation_info * rel)
 {
     int i, wkt_size;
     int roads = 0;
@@ -699,15 +716,17 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
     int * members_superseeded;
     double split_at;
 
-    members_superseeded = calloc(sizeof(int), member_count);
+    members_superseeded = calloc(sizeof(int), rel->member_count);
 
-    if (member_count == 0) {
+    if (rel->member_count == 0) {
         free(members_superseeded);
+        free_rel_struct(rel);
         return 0;
     }
 
-    if (tagtransform_filter_rel_member_tags(rel_tags, member_count, xtags, xrole, members_superseeded, &make_boundary, &make_polygon, &roads)) {
+    if (tagtransform_filter_rel_member_tags(rel->tags, rel->member_count, rel->member_tags, rel->member_roles, members_superseeded, &make_boundary, &make_polygon, &roads)) {
         free(members_superseeded);
+        free_rel_struct(rel);
         return 0;
     }
     
@@ -717,10 +736,11 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
     else
         split_at = 100 * 1000;
 
-    wkt_size = build_geometry(id, xnodes, xcount, make_polygon, Options->enable_multi, split_at);
+    wkt_size = build_geometry(rel->id, rel->member_way_nodes, rel->member_way_node_count, make_polygon, Options->enable_multi, split_at);
 
     if (!wkt_size) {
         free(members_superseeded);
+        free_rel_struct(rel);
         return 0;
     }
 
@@ -728,20 +748,20 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
         char *wkt = get_wkt(i);
 
         if (wkt && strlen(wkt)) {
-            expire_tiles_from_wkt(wkt, -id);
+            expire_tiles_from_wkt(wkt, -rel->id);
             /* FIXME: there should be a better way to detect polygons */
             if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
                 double area = get_area(i);
                 if ((area > 0.0) && enable_way_area) {
                     char tmp[32];
                     snprintf(tmp, sizeof(tmp), "%g", area);
-                    addItem(rel_tags, "way_area", tmp, 0);
+                    addItem(rel->tags, "way_area", tmp, 0);
                 }
-                write_wkts(-id, rel_tags, wkt, t_poly);
+                write_wkts(-rel->id, rel->tags, wkt, t_poly);
             } else {
-                write_wkts(-id, rel_tags, wkt, t_line);
+                write_wkts(-rel->id, rel->tags, wkt, t_line);
                 if (roads)
-                    write_wkts(-id, rel_tags, wkt, t_roads);
+                    write_wkts(-rel->id, rel->tags, wkt, t_roads);
             }
         }
         free(wkt);
@@ -754,10 +774,10 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
      * Set them in the database as done and delete their entry to not
      * have duplicates */
     if (make_polygon) {
-        for (i=0; xcount[i]; i++) {
+        for (i=0; rel->member_way_node_count[i]; i++) {
             if (members_superseeded[i]) {
-                Options->mid->ways_done(xid[i]);
-                pgsql_delete_way_from_output(xid[i]);
+                Options->mid->ways_done(rel->member_ids[i]);
+                pgsql_delete_way_from_output(rel->member_ids[i]);
             }
         }
     }
@@ -767,22 +787,22 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
     /* If we are making a boundary then also try adding any relations which form complete rings
        The linear variants will have already been processed above */
     if (make_boundary) {
-        wkt_size = build_geometry(id, xnodes, xcount, 1, Options->enable_multi, split_at);
+        wkt_size = build_geometry(rel->id, rel->member_way_nodes, rel->member_way_node_count, 1, Options->enable_multi, split_at);
         for (i=0;i<wkt_size;i++)
         {
             char *wkt = get_wkt(i);
 
             if (strlen(wkt)) {
-                expire_tiles_from_wkt(wkt, -id);
+                expire_tiles_from_wkt(wkt, -rel->id);
                 /* FIXME: there should be a better way to detect polygons */
                 if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
                     double area = get_area(i);
                     if ((area > 0.0) && enable_way_area) {
                         char tmp[32];
                         snprintf(tmp, sizeof(tmp), "%g", area);
-                        addItem(rel_tags, "way_area", tmp, 0);
+                        addItem(rel->tags, "way_area", tmp, 0);
                     }
-                    write_wkts(-id, rel_tags, wkt, t_poly);
+                    write_wkts(-rel->id, rel->tags, wkt, t_poly);
                 }
             }
             free(wkt);
@@ -790,6 +810,7 @@ static int pgsql_out_relation(osmid_t id, struct keyval *rel_tags, int member_co
         clear_wkts();
     }
 
+    free_rel_struct(rel);
     return 0;
 }
 
@@ -1266,24 +1287,29 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
 /* This is the workhorse of pgsql_add_relation, split out because it is used as the callback for iterate relations */
 static int pgsql_process_relation(osmid_t id, struct member *members, int member_count, struct keyval *tags, int exists)
 {
-    int i, j, count, count2;
+    struct relation_info * rel = malloc(sizeof(struct relation_info));
+    int i, j, count;
   osmid_t *xid2 = malloc( (member_count+1) * sizeof(osmid_t) );
-  osmid_t *xid;
-  const char **xrole = malloc( (member_count+1) * sizeof(const char *) );
-  int *xcount = malloc( (member_count+1) * sizeof(int) );
-  struct keyval *xtags  = malloc( (member_count+1) * sizeof(struct keyval) );
-  struct osmNode **xnodes = malloc( (member_count+1) * sizeof(struct osmNode*) );
+  //osmid_t *xid;
+ //const char **xrole = malloc( (member_count+1) * sizeof(const char *) );
+  //int *xcount = malloc( (member_count+1) * sizeof(int) );
+  //struct keyval *xtags  = malloc( (member_count+1) * sizeof(struct keyval) );
+  //struct osmNode **xnodes = malloc( (member_count+1) * sizeof(struct osmNode*) );
+  int filter;
+
+  rel->id = id;
+  rel->tags = tags;
+  rel->member_roles = malloc( (member_count+1) * sizeof(const char *) );
+  rel->member_way_node_count = malloc( (member_count+1) * sizeof(int) );
+  rel->member_tags = malloc( (member_count+1) * sizeof(struct keyval) );
+  rel->member_way_nodes = malloc( (member_count+1) * sizeof(struct osmNode*) );
 
   /* If the flag says this object may exist already, delete it first */
   if(exists)
       pgsql_delete_relation_from_output(id);
 
   if (tagtransform_filter_rel_tags(tags)) {
-      free(xid2);
-      free(xrole);
-      free(xcount);
-      free(xtags);
-      free(xnodes);
+      free_rel_struct(rel);
       return 1;
   }
 
@@ -1298,34 +1324,23 @@ static int pgsql_process_relation(osmid_t id, struct member *members, int member
     count++;
   }
 
-  count2 = Options->mid->ways_get_list(xid2, count, &xid, xtags, xnodes, xcount);
+  rel->member_count = Options->mid->ways_get_list(xid2, count, &rel->member_ids, rel->member_tags, rel->member_way_nodes, rel->member_way_node_count);
 
-  for (i = 0; i < count2; i++) {
+  for (i = 0; i < rel->member_count; i++) {
       for (j = i; j < member_count; j++) {
-          if (members[j].id == xid[i]) break;
+          if (members[j].id == rel->member_ids[i]) break;
       }
-      xrole[i] = members[j].role;
+      rel->member_roles[i] = members[j].role;
   }
-  xnodes[count2] = NULL;
-  xcount[count2] = 0;
-  xid[count2] = 0;
-  xrole[count2] = NULL;
+  rel->member_way_nodes[rel->member_count] = NULL;
+  rel->member_way_node_count[rel->member_count] = 0;
+  rel->member_ids[rel->member_count] = 0;
+  rel->member_roles[rel->member_count] = NULL;
 
   /* At some point we might want to consider storing the retrieved data in the members, rather than as separate arrays */
-  pgsql_out_relation(id, tags, count2, xnodes, xtags, xcount, xid, xrole);
-
-  for( i=0; i<count2; i++ )
-  {
-    resetList( &(xtags[i]) );
-    free( xnodes[i] );
-  }
+  pgsql_out_relation(rel);
 
   free(xid2);
-  free(xid);
-  free(xrole);
-  free(xcount);
-  free(xtags);
-  free(xnodes);
   return 0;
 }
 
