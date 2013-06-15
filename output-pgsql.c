@@ -85,6 +85,8 @@ static struct flagsname {
 struct taginfo *exportList[4]; /* Indexed by enum table_id */
 int exportListCount[4];
 
+static void * geom_ctx = NULL;
+
 static int pgsql_delete_way_from_output(osmid_t osm_id);
 static int pgsql_delete_relation_from_output(osmid_t osm_id);
 static int pgsql_process_relation(osmid_t id, struct member *members, int member_count, struct keyval *tags, int exists);
@@ -644,7 +646,9 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     int i, wkt_size;
     double split_at;
     double area;
+    //void * geom_ctx;
 
+    if (geom_ctx == NULL) geom_ctx = init_geometry_ctx();
     /* If the flag says this object may exist already, delete it first */
     if(exists) {
         pgsql_delete_way_from_output(id);
@@ -659,17 +663,17 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     else
         split_at = 100 * 1000;
 
-    wkt_size = get_wkt_split(nodes, count, polygon, split_at);
+    wkt_size = get_wkt_split(geom_ctx, nodes, count, polygon, split_at);
 
     for (i=0;i<wkt_size;i++)
     {
-        char *wkt = get_wkt(i);
+        char *wkt = get_wkt(geom_ctx, i);
 
         if (wkt && strlen(wkt)) {
             /* FIXME: there should be a better way to detect polygons */
             if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
                 expire_tiles_from_nodes_poly(nodes, count, id);
-                area = get_area(i);
+                area = get_area(geom_ctx, i);
                 if ((area > 0.0) && enable_way_area) {
                     char tmp[32];
                     snprintf(tmp, sizeof(tmp), "%g", area);
@@ -685,7 +689,7 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
         }
         free(wkt);
     }
-    clear_wkts();
+    clear_wkts(geom_ctx);
 	
     return 0;
 }
@@ -710,10 +714,11 @@ static void free_rel_struct(struct relation_info * rel) {
 static struct relation_info * rels_buffer[32];
 static rels_buffer_pfree = 0;
 static rels_buffer_pfirst = 0;
+#ifdef HAVE_PTHREAD
 static pthread_t * relation_thread = NULL;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond;
-
+#endif
 
 
 static void * pgsql_out_relation_thread(void * pointer) {
@@ -724,6 +729,9 @@ static void * pgsql_out_relation_thread(void * pointer) {
     int make_boundary = 0;
     int * members_superseeded;
     double split_at;
+    void * geom_ctx;
+
+    geom_ctx = init_geometry_ctx();
 
     while (1 == 1) {
  //       printf("Iterating worker\n");
@@ -757,7 +765,7 @@ static void * pgsql_out_relation_thread(void * pointer) {
         else
             split_at = 100 * 1000;
 
-        wkt_size = build_geometry(rel->id, rel->member_way_nodes, rel->member_way_node_count, make_polygon, Options->enable_multi, split_at);
+        wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes, rel->member_way_node_count, make_polygon, Options->enable_multi, split_at);
 
         if (!wkt_size) {
             free(members_superseeded);
@@ -766,13 +774,13 @@ static void * pgsql_out_relation_thread(void * pointer) {
         }
 
         for (i=0;i<wkt_size;i++) {
-            char *wkt = get_wkt(i);
+            char *wkt = get_wkt(geom_ctx, i);
 
             if (wkt && strlen(wkt)) {
                 expire_tiles_from_wkt(wkt, -rel->id);
                 /* FIXME: there should be a better way to detect polygons */
                 if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                    double area = get_area(i);
+                    double area = get_area(geom_ctx, i);
                     if ((area > 0.0) && enable_way_area) {
                         char tmp[32];
                         snprintf(tmp, sizeof(tmp), "%g", area);
@@ -788,7 +796,7 @@ static void * pgsql_out_relation_thread(void * pointer) {
             free(wkt);
         }
 
-        clear_wkts();
+        clear_wkts(geom_ctx);
 
         /* Tagtransform will have marked those member ways of the relation that
          * have fully been dealt with as part of the multi-polygon entry.
@@ -808,16 +816,16 @@ static void * pgsql_out_relation_thread(void * pointer) {
         /* If we are making a boundary then also try adding any relations which form complete rings
        The linear variants will have already been processed above */
         if (make_boundary) {
-            wkt_size = build_geometry(rel->id, rel->member_way_nodes, rel->member_way_node_count, 1, Options->enable_multi, split_at);
+            wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes, rel->member_way_node_count, 1, Options->enable_multi, split_at);
             for (i=0;i<wkt_size;i++)
             {
-                char *wkt = get_wkt(i);
+                char *wkt = get_wkt(geom_ctx, i);
 
                 if (strlen(wkt)) {
                     expire_tiles_from_wkt(wkt, -rel->id);
                     /* FIXME: there should be a better way to detect polygons */
                     if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                        double area = get_area(i);
+                        double area = get_area(geom_ctx, i);
                         if ((area > 0.0) && enable_way_area) {
                             char tmp[32];
                             snprintf(tmp, sizeof(tmp), "%g", area);
@@ -828,7 +836,7 @@ static void * pgsql_out_relation_thread(void * pointer) {
                 }
                 free(wkt);
             }
-            clear_wkts();
+            clear_wkts(geom_ctx);
         }
 
         free_rel_struct(rel);
