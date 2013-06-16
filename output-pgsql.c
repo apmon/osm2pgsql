@@ -242,29 +242,29 @@ static void free_style(void)
  * with most empty and one byte delimiters, without this optimisation we
  * transfer three times the amount of data necessary.
  */
-void copy_to_table(enum table_id table, const char *sql)
+static void copy_to_table(struct s_table * table, const char *sql)
 {
-    PGconn *sql_conn = tables[table].sql_conn;
+    PGconn *sql_conn = table->sql_conn;
     unsigned int len = strlen(sql);
-    unsigned int buflen = tables[table].buflen;
-    char *buffer = tables[table].buffer;
+    unsigned int buflen = table->buflen;
+    char *buffer = table->buffer;
 
     /* Return to copy mode if we dropped out */
-    if( !tables[table].copyMode )
+    if( !table->copyMode )
     {
-        pgsql_exec(sql_conn, PGRES_COPY_IN, "COPY %s (%s,way) FROM STDIN", tables[table].name, tables[table].columns);
-        tables[table].copyMode = 1;
+        pgsql_exec(sql_conn, PGRES_COPY_IN, "COPY %s (%s,way) FROM STDIN", table->name, table->columns);
+        table->copyMode = 1;
     }
     /* If the combination of old and new data is too big, flush old data */
-    if( (unsigned)(buflen + len) > sizeof( tables[table].buffer )-10 )
+    if( (unsigned)(buflen + len) > sizeof( table->buffer )-10 )
     {
-      pgsql_CopyData(tables[table].name, sql_conn, buffer);
+      pgsql_CopyData(table->name, sql_conn, buffer);
       buflen = 0;
 
       /* If new data by itself is also too big, output it immediately */
-      if( (unsigned)len > sizeof( tables[table].buffer )-10 )
+      if( (unsigned)len > sizeof( table->buffer )-10 )
       {
-        pgsql_CopyData(tables[table].name, sql_conn, sql);
+        pgsql_CopyData(table->name, sql_conn, sql);
         len = 0;
       }
     }
@@ -279,17 +279,17 @@ void copy_to_table(enum table_id table, const char *sql)
     /* If we have completed a line, output it */
     if( buflen > 0 && buffer[buflen-1] == '\n' )
     {
-      pgsql_CopyData(tables[table].name, sql_conn, buffer);
+      pgsql_CopyData(table->name, sql_conn, buffer);
       buflen = 0;
     }
 
-    tables[table].buflen = buflen;
+    table->buflen = buflen;
 }
 
 
 
 
-static void pgsql_out_cleanup(void)
+static void pgsql_out_cleanup(struct s_table * tables)
 {
     int i;
 
@@ -361,7 +361,7 @@ static void escape_type(char *sql, int len, const char *value, const char *type)
   }
 }
 
-static void write_hstore(enum table_id table, struct keyval *tags)
+static void write_hstore(struct s_table * table, struct keyval *tags)
 {
     static char *sql;
     static size_t sqllen=0;
@@ -423,7 +423,7 @@ static void write_hstore(enum table_id table, struct keyval *tags)
 }
 
 /* write an hstore column to the database */
-static void write_hstore_columns(enum table_id table, struct keyval *tags)
+static void write_hstore_columns(struct s_table * table, struct keyval *tags)
 {
     static char *sql;
     static size_t sqllen=0;
@@ -536,7 +536,7 @@ static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, doub
 
     expire_tiles_from_bbox(node_lon, node_lat, node_lon, node_lat);
     sprintf(sql, "%" PRIdOSMID "\t", id);
-    copy_to_table(t_point, sql);
+    copy_to_table(&(tables[t_point]), sql);
 
     for (i=0; i < exportListCount[OSMTYPE_NODE]; i++) {
         if( exportList[OSMTYPE_NODE][i].flags & FLAG_DELETE )
@@ -553,8 +553,8 @@ static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, doub
         else
             sprintf(sql, "\\N");
 
-        copy_to_table(t_point, sql);
-        copy_to_table(t_point, "\t");
+        copy_to_table(&(tables[t_point]), sql);
+        copy_to_table(&(tables[t_point]), "\t");
     }
     
     /* hstore columns */
@@ -562,7 +562,7 @@ static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, doub
     
     /* check if a regular hstore is requested */
     if (Options->enable_hstore)
-        write_hstore(t_point, tags);
+        write_hstore(&(tables[t_point]), tags);
     
 #ifdef FIXED_POINT
     // guarantee that we use the same values as in the node cache
@@ -572,15 +572,15 @@ static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, doub
 #endif
 
     sprintf(sql, "SRID=%d;POINT(%.15g %.15g)", SRID, node_lon, node_lat);
-    copy_to_table(t_point, sql);
-    copy_to_table(t_point, "\n");
+    copy_to_table(&(tables[t_point]), sql);
+    copy_to_table(&(tables[t_point]), "\n");
 
     return 0;
 }
 
 
 
-static void write_wkts(osmid_t id, struct keyval *tags, const char *wkt, enum table_id table)
+static void write_wkts(osmid_t id, struct keyval *tags, const char *wkt, struct s_table * table)
 {
   
     static char *sql;
@@ -692,12 +692,12 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
                     snprintf(tmp, sizeof(tmp), "%g", area);
                     addItem(tags, "way_area", tmp, 0);
                 }
-                write_wkts(id, tags, wkt, t_poly);
+                write_wkts(id, tags, wkt, &(tables[t_poly]));
             } else {
                 expire_tiles_from_nodes_line(nodes, count);
-                write_wkts(id, tags, wkt, t_line);
+                write_wkts(id, tags, wkt, &(tables[t_line]));
                 if (roads)
-                    write_wkts(id, tags, wkt, t_roads);
+                    write_wkts(id, tags, wkt, &(tables[t_roads]));
             }
         }
         free(wkt);
@@ -885,7 +885,7 @@ static int pgsql_out_relation(struct relation_info * rel) {
     return 0;
 }
 
-static int pgsql_out_connect(const struct output_options *options, int startTransaction) {
+static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction) {
     int i;
     for (i=0; i<NUM_TABLES; i++) {
         PGconn *sql_conn;
@@ -903,6 +903,10 @@ static int pgsql_out_connect(const struct output_options *options, int startTran
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
     }
     return 0;
+}
+
+static int pgsql_out_connect(const struct output_options *options, int startTransaction) {
+    return pgsql_out_connect2(options, tables, startTransaction);
 }
 
 static int pgsql_out_start(const struct output_options *options)
@@ -1289,7 +1293,7 @@ static void pgsql_out_stop()
 #endif
 
 
-    pgsql_out_cleanup();
+    pgsql_out_cleanup(tables);
     free_style();
 
     expire_tiles_stop();
