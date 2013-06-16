@@ -93,9 +93,10 @@ int exportListCount[4];
 
 static void * geom_ctx = NULL;
 
-static int pgsql_delete_way_from_output(osmid_t osm_id);
+static int pgsql_delete_way_from_output(osmid_t osm_id, struct s_table * tables);
 static int pgsql_delete_relation_from_output(osmid_t osm_id);
 static int pgsql_process_relation(osmid_t id, struct member *members, int member_count, struct keyval *tags, int exists);
+static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction);
 
 void read_style_file( const char *filename )
 {
@@ -664,7 +665,7 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     if (geom_ctx == NULL) geom_ctx = init_geometry_ctx();
     /* If the flag says this object may exist already, delete it first */
     if(exists) {
-        pgsql_delete_way_from_output(id);
+        pgsql_delete_way_from_output(id, tables);
         Options->mid->way_changed(id);
     }
 
@@ -733,19 +734,128 @@ pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond;
 #endif
 
+static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx, struct s_table * tables) {
+    int * members_superseeded;
+    int make_polygon = 0;
+    int make_boundary = 0;
+    int polygon = 0, roads = 0;
+    char *type;
+    double split_at;
+    int i, wkt_size;
+
+    members_superseeded = calloc(sizeof(int), rel->member_count);
+
+    if (rel->member_count == 0) {
+        free(members_superseeded);
+        free_rel_struct(rel);
+        return 0;
+    }
+
+    if (tagtransform_filter_rel_member_tags(rel->tags, rel->member_count,
+            rel->member_tags, rel->member_roles, members_superseeded,
+            &make_boundary, &make_polygon, &roads)) {
+        free(members_superseeded);
+        free_rel_struct(rel);
+        return 0;
+    }
+
+    /* Split long linear ways after around 1 degree or 100km (polygons not effected) */
+    if (Options->projection == PROJ_LATLONG)
+        split_at = 1;
+    else
+        split_at = 100 * 1000;
+
+    wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes,
+            rel->member_way_node_count, make_polygon, Options->enable_multi,
+            split_at);
+
+    if (!wkt_size) {
+        free(members_superseeded);
+        free_rel_struct(rel);
+        return 0;
+    }
+
+    for (i = 0; i < wkt_size; i++) {
+        char *wkt = get_wkt(geom_ctx, i);
+
+        if (wkt && strlen(wkt)) {
+            expire_tiles_from_wkt(wkt, -rel->id);
+            /* FIXME: there should be a better way to detect polygons */
+            if (!strncmp(wkt, "POLYGON", strlen("POLYGON"))
+                    || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
+                double area = get_area(geom_ctx, i);
+                if ((area > 0.0) && enable_way_area) {
+                    char tmp[32];
+                    snprintf(tmp, sizeof(tmp), "%g", area);
+                    addItem(rel->tags, "way_area", tmp, 0);
+                }
+                write_wkts(-rel->id, rel->tags, wkt, &(tables[t_poly]));
+            } else {
+                write_wkts(-rel->id, rel->tags, wkt, &(tables[t_line]));
+                if (roads)
+                    write_wkts(-rel->id, rel->tags, wkt, &(tables[t_roads]));
+            }
+        }
+        free(wkt);
+    }
+
+    clear_wkts(geom_ctx);
+
+    /* Tagtransform will have marked those member ways of the relation that
+     * have fully been dealt with as part of the multi-polygon entry.
+     * Set them in the database as done and delete their entry to not
+     * have duplicates */
+    if (make_polygon) {
+        for (i = 0; rel->member_way_node_count[i]; i++) {
+            if (members_superseeded[i]) {
+                Options->mid->ways_done(rel->member_ids[i]);
+                pgsql_delete_way_from_output(rel->member_ids[i], tables);
+            }
+        }
+    }
+
+    free(members_superseeded);
+
+    /* If we are making a boundary then also try adding any relations which form complete rings
+     The linear variants will have already been processed above */
+    if (make_boundary) {
+        wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes,
+                rel->member_way_node_count, 1, Options->enable_multi, split_at);
+        for (i = 0; i < wkt_size; i++) {
+            char *wkt = get_wkt(geom_ctx, i);
+
+            if (strlen(wkt)) {
+                expire_tiles_from_wkt(wkt, -rel->id);
+                /* FIXME: there should be a better way to detect polygons */
+                if (!strncmp(wkt, "POLYGON", strlen("POLYGON"))
+                        || !strncmp(wkt, "MULTIPOLYGON",
+                                strlen("MULTIPOLYGON"))) {
+                    double area = get_area(geom_ctx, i);
+                    if ((area > 0.0) && enable_way_area) {
+                        char tmp[32];
+                        snprintf(tmp, sizeof(tmp), "%g", area);
+                        addItem(rel->tags, "way_area", tmp, 0);
+                    }
+                    write_wkts(-rel->id, rel->tags, wkt, &tables[t_poly]);
+                }
+            }
+            free(wkt);
+        }
+        clear_wkts(geom_ctx);
+    }
+
+    free_rel_struct(rel);
+}
 
 static void * pgsql_out_relation_thread(void * pointer) {
     struct relation_info * rel;
-    int i, wkt_size;
-    int polygon = 0, roads = 0;
-    int make_polygon = 0;
-    int make_boundary = 0;
-    int * members_superseeded;
-    char *type;
-    double split_at;
-    void * geom_ctx;
 
+    void * geom_ctx;
     geom_ctx = init_geometry_ctx();
+
+    struct s_table * tables_l = malloc(sizeof(tables));
+    memcpy(tables_l, tables, sizeof(tables));
+    pgsql_out_connect2(Options, tables_l, 0);
 
     while (1 == 1) {
  //       printf("Iterating worker\n");
@@ -757,109 +867,19 @@ static void * pgsql_out_relation_thread(void * pointer) {
         pthread_cond_signal(&cond);
         pthread_mutex_unlock(&lock);
         //printf("Worker got work\n");
+        pgsql_out_relation_single(rel, geom_ctx, tables_l);
 
-
-        members_superseeded = calloc(sizeof(int), rel->member_count);
-
-        if (rel->member_count == 0) {
-            free(members_superseeded);
-            free_rel_struct(rel);
-            continue;
-        }
-
-        if (tagtransform_filter_rel_member_tags(rel->tags, rel->member_count, rel->member_tags, rel->member_roles, members_superseeded, &make_boundary, &make_polygon, &roads)) {
-            free(members_superseeded);
-            free_rel_struct(rel);
-            continue;
-        }
-
-        /* Split long linear ways after around 1 degree or 100km (polygons not effected) */
-        if (Options->projection == PROJ_LATLONG)
-            split_at = 1;
-        else
-            split_at = 100 * 1000;
-
-        wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes, rel->member_way_node_count, make_polygon, Options->enable_multi, split_at);
-
-        if (!wkt_size) {
-            free(members_superseeded);
-            free_rel_struct(rel);
-            continue;
-        }
-
-        for (i=0;i<wkt_size;i++) {
-            char *wkt = get_wkt(geom_ctx, i);
-
-            if (wkt && strlen(wkt)) {
-                expire_tiles_from_wkt(wkt, -rel->id);
-                /* FIXME: there should be a better way to detect polygons */
-                if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                    double area = get_area(geom_ctx, i);
-                    if ((area > 0.0) && enable_way_area) {
-                        char tmp[32];
-                        snprintf(tmp, sizeof(tmp), "%g", area);
-                        addItem(rel->tags, "way_area", tmp, 0);
-                    }
-                    //write_wkts(-rel->id, rel->tags, wkt, t_poly);
-                } else {
-                    //write_wkts(-rel->id, rel->tags, wkt, t_line);
-                    //if (roads)
-                        //write_wkts(-rel->id, rel->tags, wkt, t_roads);
-                }
-            }
-            free(wkt);
-        }
-
-        clear_wkts(geom_ctx);
-
-        /* Tagtransform will have marked those member ways of the relation that
-         * have fully been dealt with as part of the multi-polygon entry.
-         * Set them in the database as done and delete their entry to not
-         * have duplicates */
-        if (make_polygon) {
-            for (i=0; rel->member_way_node_count[i]; i++) {
-                if (members_superseeded[i]) {
-                    //Options->mid->ways_done(rel->member_ids[i]);
-                    //pgsql_delete_way_from_output(rel->member_ids[i]);
-                }
-            }
-        }
-
-        free(members_superseeded);
-
-        /* If we are making a boundary then also try adding any relations which form complete rings
-       The linear variants will have already been processed above */
-        if (make_boundary) {
-            wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes, rel->member_way_node_count, 1, Options->enable_multi, split_at);
-            for (i=0;i<wkt_size;i++)
-            {
-                char *wkt = get_wkt(geom_ctx, i);
-
-                if (strlen(wkt)) {
-                    expire_tiles_from_wkt(wkt, -rel->id);
-                    /* FIXME: there should be a better way to detect polygons */
-                    if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                        double area = get_area(geom_ctx, i);
-                        if ((area > 0.0) && enable_way_area) {
-                            char tmp[32];
-                            snprintf(tmp, sizeof(tmp), "%g", area);
-                            addItem(rel->tags, "way_area", tmp, 0);
-                        }
-                        //write_wkts(-rel->id, rel->tags, wkt, t_poly);
-                    }
-                }
-                free(wkt);
-            }
-            clear_wkts(geom_ctx);
-        }
-
-        free_rel_struct(rel);
     }
     return NULL;
 }
 
+
+
 static int pgsql_out_relation(struct relation_info * rel) {
     int i;
+
+    return pgsql_out_relation_single(rel,geom_ctx, tables);
+
     if (!relation_thread) {
         relation_thread = malloc(8*sizeof(pthread_t));
         for (i = 0; i < 8; i++) {
@@ -1433,7 +1453,7 @@ static int pgsql_delete_node(osmid_t osm_id)
 }
 
 /* Seperated out because we use it elsewhere */
-static int pgsql_delete_way_from_output(osmid_t osm_id)
+static int pgsql_delete_way_from_output(osmid_t osm_id, struct s_table * tables)
 {
     /* Optimisation: we only need this is slim mode */
     if( !Options->slim )
@@ -1441,9 +1461,9 @@ static int pgsql_delete_way_from_output(osmid_t osm_id)
     /* in droptemp mode we don't have indices and this takes ages. */
     if (Options->droptemp)
         return 0;
-    pgsql_pause_copy(&tables[t_roads]);
-    pgsql_pause_copy(&tables[t_line]);
-    pgsql_pause_copy(&tables[t_poly]);
+    pgsql_pause_copy(&(tables[t_roads]));
+    pgsql_pause_copy(&(tables[t_line]));
+    pgsql_pause_copy(&(tables[t_poly]));
     pgsql_exec(tables[t_roads].sql_conn, PGRES_COMMAND_OK, "DELETE FROM %s WHERE osm_id = %" PRIdOSMID, tables[t_roads].name, osm_id );
     if ( expire_tiles_from_db(tables[t_line].sql_conn, osm_id) != 0)
         pgsql_exec(tables[t_line].sql_conn, PGRES_COMMAND_OK, "DELETE FROM %s WHERE osm_id = %" PRIdOSMID, tables[t_line].name, osm_id );
@@ -1459,7 +1479,7 @@ static int pgsql_delete_way(osmid_t osm_id)
         fprintf( stderr, "Cannot apply diffs unless in slim mode\n" );
         exit_nicely();
     }
-    pgsql_delete_way_from_output(osm_id);
+    pgsql_delete_way_from_output(osm_id, tables);
     Options->mid->ways_delete(osm_id);
     return 0;
 }
