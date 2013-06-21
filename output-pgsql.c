@@ -91,20 +91,30 @@ int exportListCount[4];
  * This includes railways and administrative boundaries too
  */
 
-static void * geom_ctx = NULL;
-static struct relation_info * rels_buffer[32];
-static struct way_info * ways_buffer[32];
-static rels_buffer_pfree = 0;
-static rels_buffer_pfirst = 0;
-static ways_buffer_pfree = 0;
-static ways_buffer_pfirst = 0;
+static void * global_geom_ctx = NULL;
 
-static workers_finish = 0;
 #ifdef HAVE_PTHREAD
+/**
+ * Data structure to pass work from the main thread to the worker threads. This
+ * allows to de-synchronize the threads with the main thread feeding work into the
+ * pipe and the worker threads then taking out one element at a time and processing it.
+ * It is a circular buffer storing up to 64 entries for each way and relation
+ */
+#define WORKER_THREAD_QUEUE_SIZE 64
+static struct relation_info * rels_buffer[WORKER_THREAD_QUEUE_SIZE];
+static struct way_info * ways_buffer[WORKER_THREAD_QUEUE_SIZE];
+static rels_buffer_pfree = 0; //Pointer to the first free slot in the buffer
+static rels_buffer_pfirst = 0;//Pointer to the first full slot in the buffer
+static ways_buffer_pfree = 0; //Pointer to the first free slot in the buffer
+static ways_buffer_pfirst = 0;//Pointer to the first full slot in the buffer
+
+
 static pthread_t * worker_threads = NULL;
-pthread_mutex_t lock_queue = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t cond_queue_work_available;
-pthread_cond_t cond_queue_space_available;
+pthread_mutex_t lock_worker_queue = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond_worker_queue_work_available;
+pthread_cond_t cond_worker_queue_space_available;
+
+static volatile workers_finish = 0;
 #endif
 
 static int pgsql_delete_way_from_output(osmid_t osm_id, struct s_table * tables);
@@ -669,38 +679,45 @@ E4C1421D5BF24D06053E7DF4940
 212696  Oswald Road     \N      \N      \N      \N      \N      \N      minor   \N      \N      \N      \N      \N      \N      \N    0102000020E610000004000000467D923B6C22D5BFA359D93EE4DF4940B3976DA7AD11D5BF84BBB376DBDF4940997FF44D9A06D5BF4223D8B8FEDF49404D158C4AEA04D
 5BF5BB39597FCDF4940
 */
-static int pgsql_out_way_single(struct way_info * way, void * geom_ctx, struct s_table * tables)
-{
+static int pgsql_out_way_single(struct way_info * way, void * geom_ctx,
+        struct s_table * tables) {
     int polygon = 0, roads = 0;
     int i, wkt_size;
     double split_at;
     double area;
 
-    if (geom_ctx == NULL) geom_ctx = init_geometry_ctx();
     /* If the flag says this object may exist already, delete it first */
-    if(way->exists) {
+    if (way->exists) {
         pgsql_delete_way_from_output(way->id, tables);
+        //TODO: This needs to be done thread-safe
         Options->mid->way_changed(way->id);
     }
 
-    if (tagtransform_filter_way_tags(way->tags, &polygon, &roads))
+    if (tagtransform_filter_way_tags(way->tags, &polygon, &roads)) {
+        resetList(way->tags);
+        free(way->tags);
+        free(way->nodes);
+        free(way);
         return 0;
+    }
     /* Split long ways after around 1 degree or 100km */
     if (Options->projection == PROJ_LATLONG)
         split_at = 1;
     else
         split_at = 100 * 1000;
 
-    wkt_size = get_wkt_split(geom_ctx, way->nodes, way->node_count, polygon, split_at);
+    wkt_size = get_wkt_split(geom_ctx, way->nodes, way->node_count, polygon,
+            split_at);
 
-    for (i=0;i<wkt_size;i++)
-    {
+    for (i = 0; i < wkt_size; i++) {
         char *wkt = get_wkt(geom_ctx, i);
 
         if (wkt && strlen(wkt)) {
             /* FIXME: there should be a better way to detect polygons */
-            if (!strncmp(wkt, "POLYGON", strlen("POLYGON")) || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                expire_tiles_from_nodes_poly(way->nodes, way->node_count, way->id);
+            if (!strncmp(wkt, "POLYGON", strlen("POLYGON"))
+                    || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
+                expire_tiles_from_nodes_poly(way->nodes, way->node_count,
+                        way->id);
                 area = get_area(geom_ctx, i);
                 if ((area > 0.0) && enable_way_area) {
                     char tmp[32];
@@ -723,10 +740,9 @@ static int pgsql_out_way_single(struct way_info * way, void * geom_ctx, struct s
     free(way->tags);
     free(way->nodes);
     free(way);
-	
+
     return 0;
 }
-
 
 
 static void free_rel_struct(struct relation_info * rel) {
@@ -734,6 +750,7 @@ static void free_rel_struct(struct relation_info * rel) {
     for( i =0; i<rel->member_count; i++ ) {
         resetList( &(rel->member_tags[i]) );
         free( rel->member_way_nodes[i] );
+        free( rel->member_roles[i]);
     }
 
     free(rel->member_ids);
@@ -742,6 +759,7 @@ static void free_rel_struct(struct relation_info * rel) {
     free(rel->member_way_nodes);
     free(rel->member_roles);
     resetList(rel->tags);
+    free(rel->tags);
     free(rel);
 }
 
@@ -821,6 +839,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
     if (make_polygon) {
         for (i = 0; rel->member_way_node_count[i]; i++) {
             if (members_superseeded[i]) {
+                //TODO: Need to find a thread-safe way to do the done marking
                 //Options->mid->ways_done(rel->member_ids[i]);
                 pgsql_delete_way_from_output(rel->member_ids[i], tables);
             }
@@ -862,58 +881,74 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
     return 1;
 }
 
+/**
+ * This is the thread function for the worker threads. It takes an element from the work queue and passes it on to the
+ * actual processing function.
+ */
+#ifdef HAVE_PTHREAD
 static void * pgsql_out_worker_thread(void * pointer) {
     struct relation_info * rel;
     struct way_info * way;
-
     void * geom_ctx;
-    geom_ctx = init_geometry_ctx();
 
+
+    /*
+     * We need a new set of connections to postgresql in this thread
+     */
     struct s_table * tables_l = malloc(sizeof(global_tables));
     memcpy(tables_l, global_tables, sizeof(global_tables));
     pgsql_out_connect2(Options, tables_l, 0);
 
+    geom_ctx = init_geometry_ctx(); //create a new geometry ctx for this thread
+
     while ((workers_finish == 0) || (ways_buffer_pfirst != ways_buffer_pfree) || (rels_buffer_pfirst != rels_buffer_pfree)) {
-        pthread_mutex_lock(&lock_queue);
+        pthread_mutex_lock(&lock_worker_queue);
         while ((ways_buffer_pfirst == ways_buffer_pfree) && (rels_buffer_pfirst == rels_buffer_pfree)) {
-            pthread_cond_wait(&cond_queue_work_available, &lock_queue);
-            if (workers_finish) {
-                pthread_mutex_unlock(&lock_queue);
-                //printf("We are done\n");
+            pthread_cond_wait(&cond_worker_queue_work_available, &lock_worker_queue);
+            if (workers_finish) { //We are done and trying to exit.
+                pthread_mutex_unlock(&lock_worker_queue);
                 break;
             }
         }
+        //If we exited the while loop without there actually being work, then presumably we are done and want to exit the thread.
         if ((ways_buffer_pfirst == ways_buffer_pfree) && (rels_buffer_pfirst == rels_buffer_pfree)) continue;
+
         way = NULL;
         rel = NULL;
-        if (ways_buffer_pfirst != ways_buffer_pfree) {
+        if (ways_buffer_pfirst != ways_buffer_pfree) { //We have an element in the way queue, process it.
             way = ways_buffer[ways_buffer_pfirst];
             ways_buffer_pfirst++;
-            if (ways_buffer_pfirst > 31) ways_buffer_pfirst = 0;
+            if (ways_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) ways_buffer_pfirst = 0; // circular buffer wrap around
         } else {
             rel = rels_buffer[rels_buffer_pfirst];
             rels_buffer_pfirst++;
-            if (rels_buffer_pfirst > 31) rels_buffer_pfirst = 0;
+            if (rels_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfirst = 0; // circular buffer wrap around
         }
-        pthread_mutex_unlock(&lock_queue);
-        pthread_cond_signal(&cond_queue_space_available);
+        pthread_mutex_unlock(&lock_worker_queue);
+        pthread_cond_signal(&cond_worker_queue_space_available);
         if (way) pgsql_out_way_single(way, geom_ctx, tables_l);
         if (rel) pgsql_out_relation_single(rel, geom_ctx, tables_l);
 
     }
-
-    printf("\nClosing threads!\n");
+    //We are done, closing worker thread.
     pgsql_out_close2(0, tables_l);
     free(tables_l);
     close_geometry_ctx(geom_ctx);
-    printf("\nClosed threads!\n");
     return NULL;
 }
+#endif //HAVE_PTHREAD
 
 static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes, int count, int exists) {
     int i;
-    struct way_info * way = (struct way_info *)malloc(sizeof(struct way_info));
+    struct way_info * way;
+    //Create a worker package to put in the queue.
+    way = (struct way_info *)malloc(sizeof(struct way_info));
     way->id = id;
+    /* We need to duplicate the tags structure here, as the calling function of pgsql_out_way
+     * currently assumes it can free the tags. However, they can only be freed once the worker
+     * threads have actually finished the processing after which they will free the tags structure
+     * of the work package.
+     */
     way->tags = malloc(sizeof(struct keyval));
     initList(way->tags);
     cloneList(way->tags, tags);
@@ -921,14 +956,19 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     way->node_count = count;
     way->exists = exists;
 
+#if HAVE_PTHREAD
+    /* Once the worker threads have been shutdown, we don't want to use them anymore.
+     * For example because we are now in the multi-processing stage of "going over pending ways".
+     */
     if (workers_finish == 0) {
+        /* If the worker threads have not yet been started and initialize, do it now */
         if (!worker_threads) {
             pgsql_pause_copy(&global_tables[t_point]);
             pgsql_pause_copy(&global_tables[t_line]);
             pgsql_pause_copy(&global_tables[t_roads]);
             pgsql_pause_copy(&global_tables[t_poly]);
-            worker_threads = malloc(8 * sizeof(pthread_t));
-            for (i = 0; i < 8; i++) {
+            worker_threads = malloc(Options->num_procs * sizeof(pthread_t));
+            for (i = 0; i < Options->num_procs; i++) {
                 int ret = pthread_create(&(worker_threads[i]), NULL,
                         &pgsql_out_worker_thread, NULL );
                 if (ret) {
@@ -939,42 +979,57 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
             }
         }
 
-        pthread_mutex_lock(&lock_queue);
-        while ((ways_buffer_pfree + 1) % 32 == ways_buffer_pfirst) {
-            pthread_cond_wait(&cond_queue_space_available, &lock_queue);
+        pthread_mutex_lock(&lock_worker_queue);
+        while ((ways_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == ways_buffer_pfirst) {
+            //Queue is full, wait until the worker threads have processed some of it
+            //and there is space in the queue again.
+            pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
         }
 
         ways_buffer[ways_buffer_pfree] = way;
         ways_buffer_pfree++;
-        if (ways_buffer_pfree > 31)
+        if (ways_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1))
             ways_buffer_pfree = 0;
-        pthread_mutex_unlock(&lock_queue);
-        pthread_cond_signal(&cond_queue_work_available);
+        pthread_mutex_unlock(&lock_worker_queue);
+        pthread_cond_signal(&cond_worker_queue_work_available);
         return 0;
     } else {
+#endif //HAVE_PTHREAD
+        /* The external callers of pgsql_out_way assume they can free the nodes
+         * array. However due to the asynchronisity of the worker thread model,
+         * the pgsql_out_way_single function frees the nodes array. Due to the
+         * mismatch in the API, duplicate the nodes array, that both caller and
+         * pgsql_out_way_single can free the array.
+         * TODO: Find a better way, by fixing upstream of pgsql_out_way()
+         */
+
         way->nodes = malloc(sizeof(struct osmNode) * count);
         memcpy(way->nodes, nodes, sizeof(struct osmNode) * count);
-        return pgsql_out_way_single(way, geom_ctx, global_tables);
+        return pgsql_out_way_single(way, global_geom_ctx, global_tables);
+#ifdef HAVE_PTHREAD
     }
+#endif //HAVE_PTHREAD
 }
 
 
 static int pgsql_out_relation(struct relation_info * rel) {
     int i;
 
-    //return pgsql_out_relation_single(rel,geom_ctx, tables);
-
-    pthread_mutex_lock(&lock_queue);
-    while ((rels_buffer_pfree + 1) % 32 == rels_buffer_pfirst ) {
-        pthread_cond_wait(&cond_queue_space_available, &lock_queue);
+#ifdef HAVE_PTHREAD
+    pthread_mutex_lock(&lock_worker_queue);
+    while ((rels_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == rels_buffer_pfirst ) {
+        pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
     }
 
     rels_buffer[rels_buffer_pfree] = rel;
     rels_buffer_pfree++;
-    if (rels_buffer_pfree > 31) rels_buffer_pfree = 0;
-    pthread_mutex_unlock(&lock_queue);
-    pthread_cond_signal(&cond_queue_work_available);
+    if (rels_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfree = 0;
+    pthread_mutex_unlock(&lock_worker_queue);
+    pthread_cond_signal(&cond_worker_queue_work_available);
     return 0;
+#else
+    return pgsql_out_relation_single(rel, global_geom_ctx, global_tables);
+#endif //HAVE_PTHREAD
 }
 
 static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction) {
@@ -1021,7 +1076,7 @@ static int pgsql_out_start(const struct output_options *options)
     sql_len = 2048;
     sql = malloc(sql_len);
     assert(sql);
-    geom_ctx = init_geometry_ctx();
+    global_geom_ctx = init_geometry_ctx();
 
     for (i=0; i<NUM_TABLES; i++) {
         PGconn *sql_conn;
@@ -1334,9 +1389,19 @@ static void pgsql_out_stop()
      * as well as see the newly created tables.
      */
     //pgsql_out_commit();
+#ifdef HAVE_PTHREAD
     workers_finish = 1;
-    pthread_cond_broadcast(&cond_queue_work_available);
-    sleep(2);
+    pthread_cond_broadcast(&cond_worker_queue_work_available);
+    for (i=0; i<Options->num_procs; i++) {
+        int ret = pthread_join(worker_threads[i], NULL);
+        if (ret) {
+            fprintf(stderr, "pthread_join() returned an error (%d)", ret);
+            exit_nicely();
+        }
+    }
+    free(worker_threads);
+    worker_threads = NULL;
+#endif
     Options->mid->commit();
     /* To prevent deadlocks in parallel processing, the mid tables need
      * to stay out of a transaction. In this stage output tables are only
@@ -1347,7 +1412,7 @@ static void pgsql_out_stop()
         PGconn *sql_conn = global_tables[i].sql_conn;
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
     }
-    /* Processing any remaing to be processed ways */
+    /* Processing any remaining to be processed ways */
     Options->mid->iterate_ways( pgsql_out_way );
     pgsql_out_commit();
     Options->mid->commit();
@@ -1360,6 +1425,8 @@ static void pgsql_out_stop()
     Options->mid->iterate_relations( pgsql_process_relation );
 
     tagtransform_shutdown();
+    close_geometry_ctx(global_geom_ctx);
+    global_geom_ctx = NULL;
 
 #ifdef HAVE_PTHREAD
     if (Options->parallel_indexing) {
