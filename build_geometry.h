@@ -30,6 +30,7 @@ extern "C" {
 #include "osmtypes.h"
 
 void * init_geometry_ctx();
+void close_geometry_ctx(void * ctx);
 int parse_wkt(const char * wkt, struct osmNode *** xnodes, int ** xcount, int * polygon);
 
 char *get_wkt_simple(struct osmNode *, int count, int polygon);

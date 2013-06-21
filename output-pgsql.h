@@ -32,6 +32,14 @@ struct relation_info {
     struct osmNode ** member_way_nodes;
     osmid_t * member_ids;
 };
+
+struct way_info {
+    osmid_t id;
+    struct keyval * tags;
+    struct osmNode *nodes;
+    int node_count;
+    int exists;
+};
 extern struct output_t out_pgsql;
 
 #endif

@@ -86,14 +86,18 @@ struct geometry_ctx {
 static int excludepoly = 0;
 
 void * init_geometry_ctx() {
-    printf("initialising geom_ctx\n");
     struct geometry_ctx * ctx = (struct geometry_ctx *)malloc(sizeof(geometry_ctx));
     ctx->wkts = new std::vector<std::string>;
     ctx->areas = new std::vector<double>;
-    printf("Clearing geom_ctx, initialising geom_ctx\n");
     clear_wkts(ctx);
-    printf("Done\n");
     return ctx;
+}
+
+void close_geometry_ctx(void * ctx_p) {
+    struct geometry_ctx * ctx = (struct geometry_ctx *)ctx_p;
+    delete ctx->wkts;
+    delete ctx->areas;
+    free(ctx);
 }
 
 char *get_wkt_simple(osmNode *nodes, int count, int polygon) {
