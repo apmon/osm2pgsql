@@ -322,8 +322,8 @@ void keyval2hstore(char *hstring, struct keyval *tags)
 
 void keyval2hstore_manual(char *hstring, char *key, char *value)
 {
-  static char* str=NULL;
-  static size_t stlen=0;
+  char* str=NULL;
+  size_t stlen=0;
   size_t len;
  
   len=strlen(value);
@@ -341,6 +341,7 @@ void keyval2hstore_manual(char *hstring, char *key, char *value)
   escape4hstore(str,key);  
   hstring+=sprintf(hstring,"\"%s\"=>",str);
   escape4hstore(str,value);
-  sprintf(hstring,"\"%s\"",str);  
+  sprintf(hstring,"\"%s\"",str);
+  free(str);
 }
 
