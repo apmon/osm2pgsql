@@ -1565,7 +1565,7 @@ static int pgsql_process_relation(osmid_t id, struct member *members, int member
   if(exists)
       pgsql_delete_relation_from_output(id);
 
-  if (tagtransform_filter_rel_tags(global_ctx.tagtransform_ctx, tags)) {
+  if (tagtransform_filter_rel_tags(global_ctx.tagtransform_ctx, rel->tags)) {
       free_rel_struct(rel);
       return 1;
   }
