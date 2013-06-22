@@ -136,7 +136,10 @@ static struct table_desc *way_table  = &tables[t_way];
 static struct table_desc *rel_table  = &tables[t_rel];
 
 static int Append;
+
+#ifdef HAVE_PTHREAD
 pthread_mutex_t lock_middle_processing = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 const struct output_options *out_options;
 
@@ -749,7 +752,9 @@ static int pgsql_ways_get_list(osmid_t *ids, int way_count, osmid_t **way_ids, s
     pgsql_endCopy(way_table); 
 
     paramValues[0] = tmp2;
+#ifdef HAVE_PTHREAD
     pthread_mutex_lock(&lock_middle_processing);
+#endif
     res = pgsql_execPrepared(sql_conn, "get_way_list", 1, paramValues, PGRES_TUPLES_OK);
     countPG = PQntuples(res);
 
@@ -788,7 +793,9 @@ static int pgsql_ways_get_list(osmid_t *ids, int way_count, osmid_t **way_ids, s
     }
 
     PQclear(res);
+#ifdef HAVE_PTHREAD
     pthread_mutex_unlock(&lock_middle_processing);
+#endif
     free(tmp2);
     free(wayidspg);
 
@@ -806,10 +813,13 @@ static int pgsql_ways_done(osmid_t id)
 
     snprintf(tmp, sizeof(tmp), "%" PRIdOSMID, id);
     paramValues[0] = tmp;
- 
+#ifdef HAVE_PTHREAD
     pthread_mutex_lock(&lock_middle_processing);
+#endif
     pgsql_execPrepared(sql_conn, "way_done", 1, paramValues, PGRES_COMMAND_OK);
+#ifdef HAVE_PTHREAD
     pthread_mutex_unlock(&lock_middle_processing);
+#endif
     return 0;
 }
 
