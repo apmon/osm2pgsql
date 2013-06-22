@@ -842,7 +842,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
         for (i = 0; rel->member_way_node_count[i]; i++) {
             if (members_superseeded[i]) {
                 //TODO: Need to find a thread-safe way to do the done marking
-                Options->mid->ways_done(rel->member_ids[i]);
+                //Options->mid->ways_done(rel->member_ids[i]);
                 pgsql_delete_way_from_output(rel->member_ids[i], tables);
             }
         }
@@ -1018,20 +1018,21 @@ static int pgsql_out_relation(struct relation_info * rel) {
     int i;
 
 #ifdef HAVE_PTHREAD
-    pthread_mutex_lock(&lock_worker_queue);
-    while ((rels_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == rels_buffer_pfirst ) {
-        pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
-    }
+    if (workers_finish == 0) {
+        pthread_mutex_lock(&lock_worker_queue);
+        while ((rels_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == rels_buffer_pfirst ) {
+            pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
+        }
 
-    rels_buffer[rels_buffer_pfree] = rel;
-    rels_buffer_pfree++;
-    if (rels_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfree = 0;
-    pthread_mutex_unlock(&lock_worker_queue);
-    pthread_cond_signal(&cond_worker_queue_work_available);
-    return 0;
-#else
+        rels_buffer[rels_buffer_pfree] = rel;
+        rels_buffer_pfree++;
+        if (rels_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfree = 0;
+        pthread_mutex_unlock(&lock_worker_queue);
+        pthread_cond_signal(&cond_worker_queue_work_available);
+        return 0;
+    } else
+#endif
     return pgsql_out_relation_single(rel, global_geom_ctx, global_tables);
-#endif //HAVE_PTHREAD
 }
 
 static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction) {
@@ -1391,6 +1392,7 @@ static void pgsql_out_stop()
      * as well as see the newly created tables.
      */
     //pgsql_out_commit();
+
 #ifdef HAVE_PTHREAD
     workers_finish = 1;
     pthread_cond_broadcast(&cond_worker_queue_work_available);
@@ -1404,6 +1406,8 @@ static void pgsql_out_stop()
     free(worker_threads);
     worker_threads = NULL;
 #endif
+
+
     Options->mid->commit();
     /* To prevent deadlocks in parallel processing, the mid tables need
      * to stay out of a transaction. In this stage output tables are only
@@ -1416,7 +1420,7 @@ static void pgsql_out_stop()
     }*/
     /* Processing any remaining to be processed ways */
     Options->mid->iterate_ways( pgsql_out_way );
-    pgsql_out_commit();
+    //pgsql_out_commit();
     Options->mid->commit();
 
     /* Processing any remaing to be processed relations */
