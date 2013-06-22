@@ -392,17 +392,16 @@ static void escape_type(char *sql, int len, const char *value, const char *type)
 
 static void write_hstore(struct s_table * table, struct keyval *tags)
 {
-    static char *sql;
-    static size_t sqllen=0;
+    char *sql;
+    size_t sqllen=0;
     size_t hlen;
     /* a clone of the tags pointer */
     struct keyval *xtags = tags;
         
     /* sql buffer */
-    if (sqllen==0) {
-      sqllen=2048;
-      sql=malloc(sqllen);
-    }
+    sqllen=2048;
+    sql=malloc(sqllen);
+
     
     /* while this tags has a follow-up.. */
     while (xtags->next->key != NULL)
@@ -447,15 +446,15 @@ static void write_hstore(struct s_table * table, struct keyval *tags)
     
     /* finish the hstore column by placing a TAB into the data stream */
     copy_to_table(table, "\t");
-    
+    free(sql);
     /* the main hstore-column has now been written */
 }
 
 /* write an hstore column to the database */
 static void write_hstore_columns(struct s_table * table, struct keyval *tags)
 {
-    static char *sql;
-    static size_t sqllen=0;
+    char *sql;
+    int sqllen=0;
     char *shortkey;
     /* the index of the current hstore column */
     int i_hstore_column;
@@ -465,10 +464,8 @@ static void write_hstore_columns(struct s_table * table, struct keyval *tags)
     size_t hlen;
     
     /* sql buffer */
-    if (sqllen==0) {
-      sqllen=2048;
-      sql=malloc(sqllen);
-    }
+    sqllen=2048;
+    sql=malloc(sqllen);
     
     /* iterate over all configured hstore colums in the options */
     for(i_hstore_column = 0; i_hstore_column < Options->n_hstore_columns; i_hstore_column++)
@@ -530,6 +527,8 @@ static void write_hstore_columns(struct s_table * table, struct keyval *tags)
         copy_to_table(table, "\t");
     }
     
+    free(sql);
+
     /* all hstore-columns have now been written */
 }
 
