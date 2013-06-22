@@ -136,6 +136,7 @@ static struct table_desc *way_table  = &tables[t_way];
 static struct table_desc *rel_table  = &tables[t_rel];
 
 static int Append;
+pthread_mutex_t lock_middle_processing = PTHREAD_MUTEX_INITIALIZER;
 
 const struct output_options *out_options;
 
@@ -747,7 +748,8 @@ static int pgsql_ways_get_list(osmid_t *ids, int way_count, osmid_t **way_ids, s
   
     pgsql_endCopy(way_table); 
 
-    paramValues[0] = tmp2;  
+    paramValues[0] = tmp2;
+    pthread_mutex_lock(&lock_middle_processing);
     res = pgsql_execPrepared(sql_conn, "get_way_list", 1, paramValues, PGRES_TUPLES_OK);
     countPG = PQntuples(res);
 
@@ -786,6 +788,7 @@ static int pgsql_ways_get_list(osmid_t *ids, int way_count, osmid_t **way_ids, s
     }
 
     PQclear(res);
+    pthread_mutex_unlock(&lock_middle_processing);
     free(tmp2);
     free(wayidspg);
 
@@ -804,8 +807,9 @@ static int pgsql_ways_done(osmid_t id)
     snprintf(tmp, sizeof(tmp), "%" PRIdOSMID, id);
     paramValues[0] = tmp;
  
+    pthread_mutex_lock(&lock_middle_processing);
     pgsql_execPrepared(sql_conn, "way_done", 1, paramValues, PGRES_COMMAND_OK);
-
+    pthread_mutex_unlock(&lock_middle_processing);
     return 0;
 }
 
@@ -1665,10 +1669,10 @@ static int pgsql_start(const struct output_options *options)
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE IF EXISTS %s", tables[i].name);
         }
 
-        if (tables[i].start) {
+        /*if (tables[i].start) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", tables[i].start);
             tables[i].transactionMode = 1;
-        }
+        }*/
 
         if (dropcreate && tables[i].create) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", tables[i].create);
