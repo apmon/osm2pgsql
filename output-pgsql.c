@@ -118,6 +118,8 @@ pthread_mutex_t lock_worker_queue = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond_worker_queue_work_available;
 pthread_cond_t cond_worker_queue_space_available;
 
+//pthread_mutex_t lock_middle_processing = PTHREAD_MUTEX_INITIALIZER;
+
 static volatile workers_finish = 0;
 #endif
 
@@ -837,7 +839,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
         for (i = 0; rel->member_way_node_count[i]; i++) {
             if (members_superseeded[i]) {
                 //TODO: Need to find a thread-safe way to do the done marking
-                //Options->mid->ways_done(rel->member_ids[i]);
+                Options->mid->ways_done(rel->member_ids[i]);
                 pgsql_delete_way_from_output(rel->member_ids[i], tables);
             }
         }
@@ -1433,10 +1435,10 @@ static void pgsql_out_stop()
      * written to and not read, so they can be processed as several parallel
      * independent transactions
      */
-    for (i=0; i<NUM_TABLES; i++) {
+    /*for (i=0; i<NUM_TABLES; i++) {
         PGconn *sql_conn = global_tables[i].sql_conn;
         pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
-    }
+    }*/
     /* Processing any remaining to be processed ways */
     Options->mid->iterate_ways( pgsql_out_way );
     pgsql_out_commit();
