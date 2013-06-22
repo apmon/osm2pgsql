@@ -4,7 +4,7 @@
  * tags, segment lists etc 
  *
  */
-//# define USE_TREE
+#define USE_TREE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,6 +325,9 @@ void keyval2hstore_manual(char *hstring, char *key, char *value)
   char* str=NULL;
   size_t stlen=0;
   size_t len;
+
+  str = malloc(1024);
+  stlen = 1024;
  
   len=strlen(value);
   if (len>stlen) {
