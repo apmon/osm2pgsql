@@ -91,7 +91,13 @@ int exportListCount[4];
  * This includes railways and administrative boundaries too
  */
 
-static void * global_geom_ctx = NULL;
+struct thread_ctx {
+    void * geom_ctx;
+    void * tagtransform_ctx;
+    struct s_table * tables;
+};
+
+static struct thread_ctx global_ctx;
 
 #ifdef HAVE_PTHREAD
 /**
@@ -549,7 +555,7 @@ Workaround - output SRID=4326;<WKB>
 static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, double node_lon)
 {
 
-    int filter = tagtransform_filter_node_tags(tags);
+    int filter = tagtransform_filter_node_tags(global_ctx.tagtransform_ctx, tags);
     static char *sql;
     static size_t sqllen=0;
     int i;
@@ -680,8 +686,7 @@ E4C1421D5BF24D06053E7DF4940
 212696  Oswald Road     \N      \N      \N      \N      \N      \N      minor   \N      \N      \N      \N      \N      \N      \N    0102000020E610000004000000467D923B6C22D5BFA359D93EE4DF4940B3976DA7AD11D5BF84BBB376DBDF4940997FF44D9A06D5BF4223D8B8FEDF49404D158C4AEA04D
 5BF5BB39597FCDF4940
 */
-static int pgsql_out_way_single(struct way_info * way, void * geom_ctx,
-        struct s_table * tables) {
+static int pgsql_out_way_single(struct way_info * way, struct thread_ctx * ctx) {
     int polygon = 0, roads = 0;
     int i, wkt_size;
     double split_at;
@@ -689,12 +694,12 @@ static int pgsql_out_way_single(struct way_info * way, void * geom_ctx,
 
     /* If the flag says this object may exist already, delete it first */
     if (way->exists) {
-        pgsql_delete_way_from_output(way->id, tables);
+        pgsql_delete_way_from_output(way->id, ctx->tables);
         //TODO: This needs to be done thread-safe
         Options->mid->way_changed(way->id);
     }
 
-    if (tagtransform_filter_way_tags(way->tags, &polygon, &roads)) {
+    if (tagtransform_filter_way_tags(ctx->tagtransform_ctx, way->tags, &polygon, &roads)) {
         resetList(way->tags);
         free(way->tags);
         free(way->nodes);
@@ -707,11 +712,11 @@ static int pgsql_out_way_single(struct way_info * way, void * geom_ctx,
     else
         split_at = 100 * 1000;
 
-    wkt_size = get_wkt_split(geom_ctx, way->nodes, way->node_count, polygon,
+    wkt_size = get_wkt_split(ctx->geom_ctx, way->nodes, way->node_count, polygon,
             split_at);
 
     for (i = 0; i < wkt_size; i++) {
-        char *wkt = get_wkt(geom_ctx, i);
+        char *wkt = get_wkt(ctx->geom_ctx, i);
 
         if (wkt && strlen(wkt)) {
             /* FIXME: there should be a better way to detect polygons */
@@ -719,23 +724,23 @@ static int pgsql_out_way_single(struct way_info * way, void * geom_ctx,
                     || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
                 expire_tiles_from_nodes_poly(way->nodes, way->node_count,
                         way->id);
-                area = get_area(geom_ctx, i);
+                area = get_area(ctx->geom_ctx, i);
                 if ((area > 0.0) && enable_way_area) {
                     char tmp[32];
                     snprintf(tmp, sizeof(tmp), "%g", area);
                     addItem(way->tags, "way_area", tmp, 0);
                 }
-                write_wkts(way->id, way->tags, wkt, &(tables[t_poly]));
+                write_wkts(way->id, way->tags, wkt, &(ctx->tables[t_poly]));
             } else {
                 expire_tiles_from_nodes_line(way->nodes, way->node_count);
-                write_wkts(way->id, way->tags, wkt, &(tables[t_line]));
+                write_wkts(way->id, way->tags, wkt, &(ctx->tables[t_line]));
                 if (roads)
-                    write_wkts(way->id, way->tags, wkt, &(tables[t_roads]));
+                    write_wkts(way->id, way->tags, wkt, &(ctx->tables[t_roads]));
             }
         }
         free(wkt);
     }
-    clear_wkts(geom_ctx);
+    clear_wkts(ctx->geom_ctx);
 
     resetList(way->tags);
     free(way->tags);
@@ -766,7 +771,7 @@ static void free_rel_struct(struct relation_info * rel) {
 
 
 
-static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx, struct s_table * tables) {
+static int pgsql_out_relation_single(struct relation_info * rel, struct thread_ctx * ctx) {
     int * members_superseeded;
     int make_polygon = 0;
     int make_boundary = 0;
@@ -783,7 +788,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
         return 0;
     }
 
-    if (tagtransform_filter_rel_member_tags(rel->tags, rel->member_count,
+    if (tagtransform_filter_rel_member_tags(ctx->tagtransform_ctx, rel->tags, rel->member_count,
             rel->member_tags, rel->member_roles, members_superseeded,
             &make_boundary, &make_polygon, &roads)) {
         free(members_superseeded);
@@ -797,7 +802,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
     else
         split_at = 100 * 1000;
 
-    wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes,
+    wkt_size = build_geometry(ctx->geom_ctx, rel->id, rel->member_way_nodes,
             rel->member_way_node_count, make_polygon, Options->enable_multi,
             split_at);
 
@@ -808,30 +813,30 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
     }
 
     for (i = 0; i < wkt_size; i++) {
-        char *wkt = get_wkt(geom_ctx, i);
+        char *wkt = get_wkt(ctx->geom_ctx, i);
 
         if (wkt && strlen(wkt)) {
             expire_tiles_from_wkt(wkt, -rel->id);
             /* FIXME: there should be a better way to detect polygons */
             if (!strncmp(wkt, "POLYGON", strlen("POLYGON"))
                     || !strncmp(wkt, "MULTIPOLYGON", strlen("MULTIPOLYGON"))) {
-                double area = get_area(geom_ctx, i);
+                double area = get_area(ctx->geom_ctx, i);
                 if ((area > 0.0) && enable_way_area) {
                     char tmp[32];
                     snprintf(tmp, sizeof(tmp), "%g", area);
                     addItem(rel->tags, "way_area", tmp, 0);
                 }
-                write_wkts(-rel->id, rel->tags, wkt, &(tables[t_poly]));
+                write_wkts(-rel->id, rel->tags, wkt, &(ctx->tables[t_poly]));
             } else {
-                write_wkts(-rel->id, rel->tags, wkt, &(tables[t_line]));
+                write_wkts(-rel->id, rel->tags, wkt, &(ctx->tables[t_line]));
                 if (roads)
-                    write_wkts(-rel->id, rel->tags, wkt, &(tables[t_roads]));
+                    write_wkts(-rel->id, rel->tags, wkt, &(ctx->tables[t_roads]));
             }
         }
         free(wkt);
     }
 
-    clear_wkts(geom_ctx);
+    clear_wkts(ctx->geom_ctx);
 
     /* Tagtransform will have marked those member ways of the relation that
      * have fully been dealt with as part of the multi-polygon entry.
@@ -842,7 +847,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
             if (members_superseeded[i]) {
                 //TODO: Need to find a thread-safe way to do the done marking
                 Options->mid->ways_done(rel->member_ids[i]);
-                pgsql_delete_way_from_output(rel->member_ids[i], tables);
+                pgsql_delete_way_from_output(rel->member_ids[i], ctx->tables);
             }
         }
     }
@@ -852,10 +857,10 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
     /* If we are making a boundary then also try adding any relations which form complete rings
      The linear variants will have already been processed above */
     if (make_boundary) {
-        wkt_size = build_geometry(geom_ctx, rel->id, rel->member_way_nodes,
+        wkt_size = build_geometry(ctx->geom_ctx, rel->id, rel->member_way_nodes,
                 rel->member_way_node_count, 1, Options->enable_multi, split_at);
         for (i = 0; i < wkt_size; i++) {
-            char *wkt = get_wkt(geom_ctx, i);
+            char *wkt = get_wkt(ctx->geom_ctx, i);
 
             if (strlen(wkt)) {
                 expire_tiles_from_wkt(wkt, -rel->id);
@@ -863,18 +868,18 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
                 if (!strncmp(wkt, "POLYGON", strlen("POLYGON"))
                         || !strncmp(wkt, "MULTIPOLYGON",
                                 strlen("MULTIPOLYGON"))) {
-                    double area = get_area(geom_ctx, i);
+                    double area = get_area(ctx->geom_ctx, i);
                     if ((area > 0.0) && enable_way_area) {
                         char tmp[32];
                         snprintf(tmp, sizeof(tmp), "%g", area);
                         addItem(rel->tags, "way_area", tmp, 0);
                     }
-                    write_wkts(-rel->id, rel->tags, wkt, &tables[t_poly]);
+                    write_wkts(-rel->id, rel->tags, wkt, &ctx->tables[t_poly]);
                 }
             }
             free(wkt);
         }
-        clear_wkts(geom_ctx);
+        clear_wkts(ctx->geom_ctx);
     }
 
     free_rel_struct(rel);
@@ -890,17 +895,18 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
 static void * pgsql_out_worker_thread(void * pointer) {
     struct relation_info * rel;
     struct way_info * way;
-    void * geom_ctx;
+    struct thread_ctx ctx;
 
 
     /*
      * We need a new set of connections to postgresql in this thread
      */
-    struct s_table * tables_l = malloc(sizeof(global_tables));
-    memcpy(tables_l, global_tables, sizeof(global_tables));
-    pgsql_out_connect2(Options, tables_l, 0);
+    ctx.tables = malloc(sizeof(global_tables));
+    memcpy(ctx.tables, global_tables, sizeof(global_tables));
+    pgsql_out_connect2(Options, ctx.tables, 0);
 
-    geom_ctx = init_geometry_ctx(); //create a new geometry ctx for this thread
+    ctx.geom_ctx = init_geometry_ctx(); //create a new geometry ctx for this thread
+    ctx.tagtransform_ctx = tagtransform_init(Options);
 
     while ((workers_finish == 0) || (ways_buffer_pfirst != ways_buffer_pfree) || (rels_buffer_pfirst != rels_buffer_pfree)) {
         pthread_mutex_lock(&lock_worker_queue);
@@ -927,14 +933,15 @@ static void * pgsql_out_worker_thread(void * pointer) {
         }
         pthread_mutex_unlock(&lock_worker_queue);
         pthread_cond_signal(&cond_worker_queue_space_available);
-        if (way) pgsql_out_way_single(way, geom_ctx, tables_l);
-        if (rel) pgsql_out_relation_single(rel, geom_ctx, tables_l);
+        if (way) pgsql_out_way_single(way, &ctx);
+        if (rel) pgsql_out_relation_single(rel, &ctx);
 
     }
     //We are done, closing worker thread.
-    pgsql_out_close2(0, tables_l);
-    free(tables_l);
-    close_geometry_ctx(geom_ctx);
+    pgsql_out_close2(0, ctx.tables);
+    free(ctx.tables);
+    close_geometry_ctx(ctx.geom_ctx);
+    tagtransform_shutdown(ctx.tagtransform_ctx);
     return NULL;
 }
 #endif //HAVE_PTHREAD
@@ -1006,7 +1013,7 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
 
         way->nodes = malloc(sizeof(struct osmNode) * count);
         memcpy(way->nodes, nodes, sizeof(struct osmNode) * count);
-        return pgsql_out_way_single(way, global_geom_ctx, global_tables);
+        return pgsql_out_way_single(way, &global_ctx);
 #ifdef HAVE_PTHREAD
     }
 #endif //HAVE_PTHREAD
@@ -1031,7 +1038,7 @@ static int pgsql_out_relation(struct relation_info * rel) {
         return 0;
     } else
 #endif
-    return pgsql_out_relation_single(rel, global_geom_ctx, global_tables);
+    return pgsql_out_relation_single(rel, &global_ctx);
 }
 
 static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction) {
@@ -1078,7 +1085,6 @@ static int pgsql_out_start(const struct output_options *options)
     sql_len = 2048;
     sql = malloc(sql_len);
     assert(sql);
-    global_geom_ctx = init_geometry_ctx();
 
     for (i=0; i<NUM_TABLES; i++) {
         PGconn *sql_conn;
@@ -1237,7 +1243,11 @@ static int pgsql_out_start(const struct output_options *options)
     }
     free(sql);
 
-    if (tagtransform_init(options)) {
+    global_ctx.tables = global_tables;
+    global_ctx.geom_ctx = init_geometry_ctx();
+    global_ctx.tagtransform_ctx = tagtransform_init(options);
+
+    if (!global_ctx.tagtransform_ctx) {
         fprintf(stderr, "Error: Failed to initialise tag processing.\n");
         exit_nicely();
     }
@@ -1429,9 +1439,9 @@ static void pgsql_out_stop()
      */    
     Options->mid->iterate_relations( pgsql_process_relation );
 
-    tagtransform_shutdown();
-    close_geometry_ctx(global_geom_ctx);
-    global_geom_ctx = NULL;
+    tagtransform_shutdown(global_ctx.tagtransform_ctx);
+    close_geometry_ctx(global_ctx.geom_ctx);
+    global_ctx.geom_ctx = NULL;
 
 #ifdef HAVE_PTHREAD
     if (Options->parallel_indexing) {
@@ -1487,7 +1497,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
 
 
   /* Check whether the way is: (1) Exportable, (2) Maybe a polygon */
-  int filter = tagtransform_filter_way_tags(tags, &polygon, &roads);
+  int filter = tagtransform_filter_way_tags(global_ctx.tagtransform_ctx, tags, &polygon, &roads);
 
   /* If this isn't a polygon then it can not be part of a multipolygon
      Hence only polygons are "pending" */
@@ -1530,7 +1540,7 @@ static int pgsql_process_relation(osmid_t id, struct member *members, int member
   if(exists)
       pgsql_delete_relation_from_output(id);
 
-  if (tagtransform_filter_rel_tags(tags)) {
+  if (tagtransform_filter_rel_tags(global_ctx.tagtransform_ctx, tags)) {
       free_rel_struct(rel);
       return 1;
   }
