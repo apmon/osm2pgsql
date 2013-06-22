@@ -838,7 +838,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, void * geom_ctx
         for (i = 0; rel->member_way_node_count[i]; i++) {
             if (members_superseeded[i]) {
                 //TODO: Need to find a thread-safe way to do the done marking
-                //Options->mid->ways_done(rel->member_ids[i]);
+                Options->mid->ways_done(rel->member_ids[i]);
                 pgsql_delete_way_from_output(rel->member_ids[i], tables);
             }
         }
