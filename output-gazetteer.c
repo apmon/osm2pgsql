@@ -70,6 +70,8 @@ static unsigned int BufferErrorLen = 0;
 
 static FILE * hLog = NULL;
 
+static void * middle_ctx;
+
 static void require_slim_mode(void)
 {
    if (!Options->slim)
@@ -1028,7 +1030,7 @@ static void gazetteer_out_stop(void)
    /* Process any remaining ways and relations */
 
    /* No longer need to access middle layer */
-   Options->mid->commit();
+   Options->mid->commit(middle_ctx);
    Options->mid->stop();
 
    /* Stop any active copy */
@@ -1073,7 +1075,7 @@ static int gazetteer_process_node(osmid_t id, double lat, double lon, struct key
    split_tags(tags, TAGINFO_NODE, &names, &places, &extratags, &adminlevel, &housenumber, &street, &addr_place, &isin, &postcode, &countrycode);
 
    /* Feed this node to the middle layer */
-   Options->mid->nodes_set(id, lat, lon, tags);
+   Options->mid->nodes_set(middle_ctx, id, lat, lon, tags);
 
    if (delete_old)
        delete_unused_classes('N', id, &places);
@@ -1128,7 +1130,7 @@ static int gazetteer_process_way(osmid_t id, osmid_t *ndv, int ndc, struct keyva
    area = split_tags(tags, TAGINFO_WAY, &names, &places, &extratags, &adminlevel, &housenumber, &street, &addr_place, &isin, &postcode, &countrycode);
 
    /* Feed this way to the middle layer */
-   Options->mid->ways_set(id, ndv, ndc, tags, 0);
+   Options->mid->ways_set(middle_ctx, id, ndv, ndc, tags, 0);
 
    if (delete_old)
        delete_unused_classes('W', id, &places);
@@ -1142,7 +1144,7 @@ static int gazetteer_process_way(osmid_t id, osmid_t *ndv, int ndc, struct keyva
     
       /* Fetch the node details */
       nodev = malloc(ndc * sizeof(struct osmNode));
-      nodec = Options->mid->nodes_get_list(nodev, ndv, ndc);
+      nodec = Options->mid->nodes_get_list(middle_ctx, nodev, ndv, ndc);
 
       /* Get the geometry of the object */
       if ((wkt = get_wkt_simple(nodev, nodec, area)) != NULL && strlen(wkt) > 0)
@@ -1205,7 +1207,7 @@ static int gazetteer_process_relation(osmid_t id, struct member *members, int me
 
    if (!strcmp(type, "associatedStreet") || !strcmp(type, "relatedStreet"))
    {
-      Options->mid->relations_set(id, members, member_count, tags);
+      Options->mid->relations_set(middle_ctx, id, members, member_count, tags);
       if (delete_old) delete_unused_classes('R', id, 0); 
       return 0;
    }
@@ -1215,7 +1217,7 @@ static int gazetteer_process_relation(osmid_t id, struct member *members, int me
       return 0;
    }
 
-   Options->mid->relations_set(id, members, member_count, tags);
+   Options->mid->relations_set(middle_ctx, id, members, member_count, tags);
 
    /* Split the tags */
    split_tags(tags, TAGINFO_AREA, &names, &places, &extratags, &adminlevel, &housenumber, &street, &addr_place, &isin, &postcode, &countrycode);
@@ -1243,7 +1245,7 @@ static int gazetteer_process_relation(osmid_t id, struct member *members, int me
          count++;
       }
 
-      count = Options->mid->ways_get_list(xid2, count, &xid, xtags, xnodes, xcount);
+      count = Options->mid->ways_get_list(middle_ctx, xid2, count, &xid, xtags, xnodes, xcount);
 
       xnodes[count] = NULL;
       xcount[count] = 0;
@@ -1309,7 +1311,7 @@ static int gazetteer_delete_node(osmid_t id)
    delete_place('N', id);
 
    /* Feed this delete to the middle layer */
-   Options->mid->nodes_delete(id);
+   Options->mid->nodes_delete(middle_ctx, id);
 
    return 0;
 }
@@ -1323,7 +1325,7 @@ static int gazetteer_delete_way(osmid_t id)
    delete_place('W', id);
 
    /* Feed this delete to the middle layer */
-   Options->mid->ways_delete(id);
+   Options->mid->ways_delete(middle_ctx, id);
 
    return 0;
 }
@@ -1337,7 +1339,7 @@ static int gazetteer_delete_relation(osmid_t id)
    delete_place('R', id);
 
    /* Feed this delete to the middle layer */
-   Options->mid->relations_delete(id);
+   Options->mid->relations_delete(middle_ctx, id);
 
    return 0;
 }
@@ -1345,21 +1347,21 @@ static int gazetteer_delete_relation(osmid_t id)
 static int gazetteer_modify_node(osmid_t id, double lat, double lon, struct keyval *tags)
 {
    require_slim_mode();
-   Options->mid->nodes_delete(id);
+   Options->mid->nodes_delete(middle_ctx, id);
    return gazetteer_process_node(id, lat, lon, tags, 1);
 }
 
 static int gazetteer_modify_way(osmid_t id, osmid_t *ndv, int ndc, struct keyval *tags)
 {
    require_slim_mode();
-   Options->mid->ways_delete(id);
+   Options->mid->ways_delete(middle_ctx, id);
    return gazetteer_process_way(id, ndv, ndc, tags, 1);
 }
 
 static int gazetteer_modify_relation(osmid_t id, struct member *members, int member_count, struct keyval *tags)
 {
    require_slim_mode();
-   Options->mid->relations_delete(id);
+   Options->mid->relations_delete(middle_ctx, id);
    return gazetteer_process_relation(id, members, member_count, tags, 1);
 }
 
