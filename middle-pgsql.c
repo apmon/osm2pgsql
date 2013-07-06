@@ -564,7 +564,7 @@ static int pgsql_nodes_get_list(void * thread_ctx, struct osmNode *nodes, osmid_
         free(tmp2);
         return count; /* All ids where in cache, so nothing more to do */
     }
- 
+
     pgsql_endCopy(&(tables_conn[t_node]));
 
     paramValues[0] = tmp2;  
@@ -808,7 +808,6 @@ static int pgsql_ways_get_list(void * thread_ctx, osmid_t *ids, int way_count, o
                 count_ptr[count] = out_options->flat_node_cache_enabled ?
                     persistent_cache_nodes_get_list(nodes_ptr[count], list, num_nodes) :
                     pgsql_nodes_get_list(thread_ctx, nodes_ptr[count], list, num_nodes);
-
                 count++;
                 initList(&(tags[count]));
             }
