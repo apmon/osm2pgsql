@@ -51,6 +51,10 @@ struct ramRel {
  *
  */
 
+struct thread_ctx { //Dummy structure to pass around
+
+};
+
 #define BLOCK_SHIFT 10
 #define PER_BLOCK  (1 << BLOCK_SHIFT)
 #define NUM_BLOCKS (1 << (32 - BLOCK_SHIFT))
@@ -322,8 +326,9 @@ static void ram_end(void)
     /* No need */
 }
 
-static int ram_start(const struct output_options *options)
+static void * ram_start(const struct output_options *options)
 {
+    struct thread_ctx * ctx = malloc(sizeof(struct thread_ctx));
     /* latlong has a range of +-180, mercator +-20000
        The fixed poing scaling needs adjusting accordingly to
        be stored accurately in an int */
@@ -333,7 +338,7 @@ static int ram_start(const struct output_options *options)
     
     fprintf( stderr, "Mid: Ram, scale=%d\n", scale );
 
-    return 0;
+    return ctx;
 }
 
 static void ram_stop(void)
@@ -357,14 +362,18 @@ static void ram_stop(void)
     }
 }
 
-static void ram_commit(void) {
+static void ram_cleanup(void * thread_ctx) {
+
+}
+
+static void ram_commit(void * thread_ctx) {
 }
 
 struct middle_t mid_ram = {
     .start             = ram_start,
     .stop              = ram_stop,
     .end               = ram_end,
-    .cleanup           = ram_stop,
+    .cleanup           = ram_cleanup,
     .analyze           = ram_analyze,
     .commit            = ram_commit,
     .nodes_set         = ram_cache_nodes_set,

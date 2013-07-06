@@ -4,7 +4,7 @@
  * tags, segment lists etc 
  *
  */
-//# define USE_TREE
+#define USE_TREE
 
 #include <stdio.h>
 #include <stdlib.h>
