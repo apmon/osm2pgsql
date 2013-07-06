@@ -81,10 +81,10 @@ const char *text_get(struct tree_context *context, const char *text)
 #endif
         return dupe->str;
     } else {
+        node->ref++;
 #ifdef HAVE_PTHREAD
         pthread_mutex_unlock(&lock_text_tree);
 #endif
-        node->ref++;
         return node->str;
     }
 }
@@ -101,7 +101,11 @@ void text_release(struct tree_context *context, const char *text)
 #endif
     node = rb_find(context->table, (void *)&find);
     if (!node) {
-        fprintf(stderr, "failed to find '%s'\n", text);
+        fprintf(stderr, "failed to find '%s' trying again\n", text);
+        node = rb_find(context->table, (void *)&find);
+        if (node) { //TODO: fixme remove
+            fprintf(stderr, "not repeatable error\n");
+        } fprintf(stderr,"still failed\n");
         return;
     }
     node->ref--;

@@ -850,7 +850,6 @@ static int pgsql_out_relation_single(struct relation_info * rel, struct thread_c
     if (!wkt_size) {
         free(members_superseeded);
         free_rel_struct(rel);
-        printf("Bugger\n");
         return 0;
     }
 
@@ -1006,7 +1005,9 @@ static void * pgsql_worker_thread(void * pointer) {
 
     ctx.geom_ctx = init_geometry_ctx(); //create a new geometry ctx for this thread
     ctx.tagtransform_ctx = tagtransform_init(Options);
-    ctx.middle_ctx = Options->mid->connect(Options);
+    if (Options->mid->connect) {
+        ctx.middle_ctx = Options->mid->connect(Options);
+    } else ctx.middle_ctx = global_ctx.middle_ctx;
 
     while ((workers_finish == 0) || (ways_buffer_pfirst != ways_buffer_pfree) || (rels_buffer_pfirst != rels_buffer_pfree)) {
         pthread_mutex_lock(&lock_worker_queue);
@@ -1562,6 +1563,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
     int i;
 
     if (!worker_threads) {
+        Options->mid->commit(global_ctx.middle_ctx);
         pgsql_pause_copy(&global_tables[t_point]);
         pgsql_pause_copy(&global_tables[t_line]);
         pgsql_pause_copy(&global_tables[t_roads]);
