@@ -1026,7 +1026,7 @@ static void * pgsql_worker_thread(void * pointer) {
             way = ways_buffer[ways_buffer_pfirst];
             ways_buffer_pfirst++;
             if (ways_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) ways_buffer_pfirst = 0; // circular buffer wrap around
-            way_inflight &= ((uint64_t)1 << *thread_id); //We will likely have written a way to the middle layer, so we need to remember to flush it before moving on.
+            way_inflight |= ((uint64_t)1 << *thread_id); //We will likely have written a way to the middle layer, so we need to remember to flush it before moving on.
         } else {
             rel = rels_buffer[rels_buffer_pfirst];
             rels_buffer_pfirst++;
@@ -1040,7 +1040,7 @@ static void * pgsql_worker_thread(void * pointer) {
              * committed and visible to all threads, as otherwise we might not be able to retrieve all ways in
              * the relation processing.
              */
-            if (way_inflight & ((uint64_t)1 << *thread_id) > 0) { //Check if this thread needs committing
+            if ((way_inflight & ((uint64_t)1 << *thread_id)) > 0) { //Check if this thread needs committing
                 Options->mid->commit(ctx.middle_ctx);
                 pthread_mutex_lock(&lock_worker_queue);
                 way_inflight ^= ((uint64_t)1 << *thread_id);
