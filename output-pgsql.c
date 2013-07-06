@@ -120,8 +120,9 @@ static pthread_t * worker_threads = NULL;
 pthread_mutex_t lock_worker_queue = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond_worker_queue_work_available;
 pthread_cond_t cond_worker_queue_space_available;
+pthread_cond_t cond_worker_flush_middle; //Used to synchronize committing of middle layer in all threads on switching between ways and relations
 
-static int way_inflight = 0;
+static uint64_t way_inflight; //signals which threads have written ways to the middle layer and need to be flushed before switching to relations
 
 //pthread_mutex_t lock_middle_processing = PTHREAD_MUTEX_INITIALIZER;
 
@@ -993,6 +994,7 @@ static void * pgsql_worker_thread(void * pointer) {
     struct relation_info2 * rel;
     struct way_info2 * way;
     struct thread_ctx ctx;
+    int * thread_id = pointer;
 
 
     /*
@@ -1024,6 +1026,7 @@ static void * pgsql_worker_thread(void * pointer) {
             way = ways_buffer[ways_buffer_pfirst];
             ways_buffer_pfirst++;
             if (ways_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) ways_buffer_pfirst = 0; // circular buffer wrap around
+            way_inflight &= ((uint64_t)1 << *thread_id); //We will likely have written a way to the middle layer, so we need to remember to flush it before moving on.
         } else {
             rel = rels_buffer[rels_buffer_pfirst];
             rels_buffer_pfirst++;
@@ -1032,7 +1035,27 @@ static void * pgsql_worker_thread(void * pointer) {
         pthread_mutex_unlock(&lock_worker_queue);
         pthread_cond_signal(&cond_worker_queue_space_available);
         if (way) pgsql_add_way_single(&ctx, way);
-        if (rel) pgsql_process_relation_single(&ctx, rel);
+        if (rel) {
+            /* Before processing relations, we need to make sure that all ways in the middle layer have been
+             * committed and visible to all threads, as otherwise we might not be able to retrieve all ways in
+             * the relation processing.
+             */
+            if (way_inflight & ((uint64_t)1 << *thread_id) > 0) { //Check if this thread needs committing
+                Options->mid->commit(ctx.middle_ctx);
+                pthread_mutex_lock(&lock_worker_queue);
+                way_inflight ^= ((uint64_t)1 << *thread_id);
+                if (way_inflight == 0) {
+                    pthread_cond_broadcast(&cond_worker_flush_middle);
+                }
+                pthread_mutex_unlock(&lock_worker_queue);
+            }
+            pthread_mutex_lock(&lock_worker_queue);
+            while (way_inflight) {
+                pthread_cond_wait(&cond_worker_flush_middle, &lock_worker_queue);
+            }
+            pthread_mutex_unlock(&lock_worker_queue);
+            pgsql_process_relation_single(&ctx, rel);
+        }
 
     }
     //We are done, closing worker thread.
@@ -1042,6 +1065,7 @@ static void * pgsql_worker_thread(void * pointer) {
     free(ctx.tables);
     close_geometry_ctx(ctx.geom_ctx);
     tagtransform_shutdown(ctx.tagtransform_ctx);
+    free(thread_id);
     return NULL;
 }
 #endif //HAVE_PTHREAD
@@ -1049,7 +1073,6 @@ static void * pgsql_worker_thread(void * pointer) {
 static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes, int count, int exists) {
     int i;
     struct way_info * way;
-    way_inflight = 1;
     //Create a worker package to put in the queue.
     way = (struct way_info *)malloc(sizeof(struct way_info));
     way->id = id;
@@ -1065,82 +1088,19 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     way->node_count = count;
     way->exists = exists;
 
-#if HAVE_PTHREAD_DISABLED
-    /* Once the worker threads have been shutdown, we don't want to use them anymore.
-     * For example because we are now in the multi-processing stage of "going over pending ways".
+    /* The external callers of pgsql_out_way assume they can free the nodes
+     * array. However due to the asynchronisity of the worker thread model,
+     * the pgsql_out_way_single function frees the nodes array. Due to the
+     * mismatch in the API, duplicate the nodes array, that both caller and
+     * pgsql_out_way_single can free the array.
+     * TODO: Find a better way, by fixing upstream of pgsql_out_way()
      */
-    if (workers_finish == 0) {
-        /* If the worker threads have not yet been started and initialize, do it now */
-        if (!worker_threads) {
-            pgsql_pause_copy(&global_tables[t_point]);
-            pgsql_pause_copy(&global_tables[t_line]);
-            pgsql_pause_copy(&global_tables[t_roads]);
-            pgsql_pause_copy(&global_tables[t_poly]);
-            worker_threads = malloc(Options->num_procs * sizeof(pthread_t));
-            for (i = 0; i < Options->num_procs; i++) {
-                int ret = pthread_create(&(worker_threads[i]), NULL,
-                        &pgsql_worker_thread, NULL );
-                if (ret) {
-                    fprintf(stderr, "pthread_create() returned an error (%d)",
-                            ret);
-                    exit_nicely();
-                }
-            }
-        }
 
-        pthread_mutex_lock(&lock_worker_queue);
-        while ((ways_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == ways_buffer_pfirst) {
-            //Queue is full, wait until the worker threads have processed some of it
-            //and there is space in the queue again.
-            pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
-        }
-
-        ways_buffer[ways_buffer_pfree] = way;
-        ways_buffer_pfree++;
-        if (ways_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1))
-            ways_buffer_pfree = 0;
-        pthread_mutex_unlock(&lock_worker_queue);
-        pthread_cond_signal(&cond_worker_queue_work_available);
-        return 0;
-    } else {
-#endif //HAVE_PTHREAD
-        /* The external callers of pgsql_out_way assume they can free the nodes
-         * array. However due to the asynchronisity of the worker thread model,
-         * the pgsql_out_way_single function frees the nodes array. Due to the
-         * mismatch in the API, duplicate the nodes array, that both caller and
-         * pgsql_out_way_single can free the array.
-         * TODO: Find a better way, by fixing upstream of pgsql_out_way()
-         */
-
-        way->nodes = malloc(sizeof(struct osmNode) * count);
-        memcpy(way->nodes, nodes, sizeof(struct osmNode) * count);
-        return pgsql_out_way_single(&global_ctx, way);
-#ifdef HAVE_PTHREAD_DISABLED
-    }
-#endif //HAVE_PTHREAD*/
+    way->nodes = malloc(sizeof(struct osmNode) * count);
+    memcpy(way->nodes, nodes, sizeof(struct osmNode) * count);
+    return pgsql_out_way_single(&global_ctx, way);
 }
 
-
-/*static int pgsql_out_relation(struct relation_info * rel) {
-    int i;
-
-#ifdef HAVE_PTHREAD
-    if (workers_finish == 0) {
-        pthread_mutex_lock(&lock_worker_queue);
-        while ((rels_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == rels_buffer_pfirst ) {
-            pthread_cond_wait(&cond_worker_queue_space_available, &lock_worker_queue);
-        }
-
-        rels_buffer[rels_buffer_pfree] = rel;
-        rels_buffer_pfree++;
-        if (rels_buffer_pfree > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfree = 0;
-        pthread_mutex_unlock(&lock_worker_queue);
-        pthread_cond_signal(&cond_worker_queue_work_available);
-        return 0;
-    } else
-#endif
-    return pgsql_out_relation_single(rel, &global_ctx);
-}*/
 
 static int pgsql_out_connect2(const struct output_options *options, struct s_table * tables, int startTransaction) {
     int i;
@@ -1608,8 +1568,10 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
         pgsql_pause_copy(&global_tables[t_poly]);
         worker_threads = malloc(Options->num_procs * sizeof(pthread_t));
         for (i = 0; i < Options->num_procs; i++) {
+            int * thread_id = malloc(sizeof(int));
+            *thread_id = i + 1; //thread_id is the global_ctx thread.
             int ret = pthread_create(&(worker_threads[i]), NULL,
-                    &pgsql_worker_thread, NULL );
+                    &pgsql_worker_thread, thread_id );
             if (ret) {
                 fprintf(stderr, "pthread_create() returned an error (%d)",
                         ret);
@@ -1650,11 +1612,6 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
 static int pgsql_process_relation(osmid_t id, struct member *members, int member_count, struct keyval *tags, int exists) {
     int i;
     struct relation_info2 * rel = malloc(sizeof(struct relation_info2));
-
-    if (way_inflight) {
-        Options->mid->commit(global_ctx.middle_ctx);
-        way_inflight = 0; //TODO: Better thread synchronization for all threads.
-    }
 
     rel->id = id;
     rel->tags = malloc(sizeof(struct keyval));
