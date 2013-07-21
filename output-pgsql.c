@@ -1562,6 +1562,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
     struct way_info2 * way = malloc(sizeof(struct way_info2));
     int i;
 
+#ifdef HAVE_PTHREAD
     if (!worker_threads) {
         Options->mid->commit(global_ctx.middle_ctx);
         pgsql_pause_copy(&global_tables[t_point]);
@@ -1581,6 +1582,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
             }
         }
     }
+#endif //HAVE_PTHREAD
 
     way->id = id;
     way->nd_count = nd_count;
@@ -1590,6 +1592,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
     initList(way->tags);
     cloneList(way->tags, tags);
 
+#ifdef HAVE_PTHREAD
     pthread_mutex_lock(&lock_worker_queue);
     while ((ways_buffer_pfree + 1) % WORKER_THREAD_QUEUE_SIZE == ways_buffer_pfirst) {
         //Queue is full, wait until the worker threads have processed some of it
@@ -1604,6 +1607,9 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
     pthread_mutex_unlock(&lock_worker_queue);
     pthread_cond_signal(&cond_worker_queue_work_available);
     return 0;
+#else
+    pgsql_add_way_single(&global_ctx, way);
+#endif
 
 }
 
