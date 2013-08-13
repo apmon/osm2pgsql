@@ -700,7 +700,6 @@ static int pgsql_out_way_single(struct thread_ctx * ctx, struct way_info * way) 
     /* If the flag says this object may exist already, delete it first */
     if (way->exists) {
         pgsql_delete_way_from_output(way->id, ctx->tables);
-        //TODO: This needs to be done thread-safe
         Options->mid->way_changed(ctx->middle_ctx, way->id);
     }
 
@@ -1120,11 +1119,13 @@ static int pgsql_out_connect2(const struct output_options *options, struct s_tab
         if (startTransaction)
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "BEGIN");
         tables[i].copyMode = 0;
+
     }
     return 0;
 }
 
-static int pgsql_out_connect(const struct output_options *options, int startTransaction) {
+static int pgsql_out_connect(const struct output_options *options, void * mid_ctx, int startTransaction) {
+    global_ctx.middle_ctx = mid_ctx;
     return pgsql_out_connect2(options, global_tables, startTransaction);
 }
 

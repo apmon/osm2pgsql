@@ -929,7 +929,7 @@ static void pgsql_iterate_ways(int (*callback)(osmid_t id, struct keyval *tags, 
 #endif
     if ((pid == 0) && (noProcs > 1)) {
         /* After forking, need to reconnect to the postgresql db */
-        if (((global_ctx = (struct mid_pg_thread_ctx *)pgsql_connect(out_options)) == 0) || (out_options->out->connect(out_options, 1) != 0)) {
+        if (((global_ctx = (struct mid_pg_thread_ctx *)pgsql_connect(out_options)) == 0) || (out_options->out->connect(out_options, global_ctx, 1) != 0)) {
 #if HAVE_MMAP
             info[p].finished = HELPER_STATE_FAILED;
 #else
@@ -1332,7 +1332,7 @@ static void pgsql_iterate_relations(int (*callback)(osmid_t id, struct member *m
     }
 #endif
     if ((pid == 0) && (noProcs > 1)) {
-        if ((out_options->out->connect(out_options, 0) != 0) || ((global_ctx = pgsql_connect(out_options)) == 0)) {
+        if (((global_ctx = pgsql_connect(out_options)) == 0) || (out_options->out->connect(out_options, global_ctx, 0) != 0)) {
 #if HAVE_MMAP
             info[p].finished = HELPER_STATE_FAILED;
 #endif
