@@ -589,7 +589,7 @@ int persistent_cache_nodes_get_list(void * ctx_p, struct osmNode *nodes, osmid_t
 
 void * init_node_persistent_cache(const struct output_options *options, int append) {
     struct node_persistent_thread_ctx * ctx = malloc(sizeof(struct node_persistent_thread_ctx));
-    int i;
+    int i, err;
     scale = options->scale;
     append_mode = append;
     node_cache_fname = options->flat_node_file;
@@ -647,12 +647,17 @@ void * init_node_persistent_cache(const struct output_options *options, int appe
         if (cache_already_written == 0)
         {
             #ifdef HAVE_POSIX_FALLOCATE
-            if (posix_fallocate(ctx->node_cache_fd, 0,
-                    sizeof(struct ramNode) * MAXIMUM_INITIAL_ID) != 0)
+            if ((err = posix_fallocate(node_cache_fd, 0,
+                    sizeof(struct ramNode) * MAXIMUM_INITIAL_ID)) != 0)
             {
-                fprintf(stderr,
-                        "Failed to allocate space for node cache file: %s\n",
-                        strerror(errno));
+                if (err == ENOSPC) {
+                    fprintf(stderr, "Failed to allocate space for node cache file: No space on disk\n");
+                } else if (err = EFBIG) {
+                    fprintf(stderr, "Failed to allocate space for node cache file: File is too big\n");
+                } else {
+                    fprintf(stderr, "Failed to allocate space for node cache file: Internal error %i\n", err);
+                }
+
                 close(ctx->node_cache_fd);
                 exit_nicely();
             }
