@@ -71,6 +71,7 @@ static unsigned int BufferErrorLen = 0;
 static FILE * hLog = NULL;
 
 static void * middle_ctx;
+static void * geom_ctx;
 
 static void require_slim_mode(void)
 {
@@ -1028,7 +1029,9 @@ static int gazetteer_out_start(const struct output_options *options)
    }
 
    /* Setup middle layer */
-   options->mid->start(options);
+   middle_ctx = options->mid->start(options);
+
+   geom_ctx = init_geometry_ctx();
 
    hLog = fopen("log", "w");
 
@@ -1207,7 +1210,6 @@ static int gazetteer_process_relation(osmid_t id, struct member *members, int me
    struct keyval * countrycode;
    int wkt_size;
    const char *type;
-   void * geom_ctx;
 
    type = getItem(tags, "type");
    if (!type) {

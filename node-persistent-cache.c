@@ -647,7 +647,7 @@ void * init_node_persistent_cache(const struct output_options *options, int appe
         if (cache_already_written == 0)
         {
             #ifdef HAVE_POSIX_FALLOCATE
-            if ((err = posix_fallocate(node_cache_fd, 0,
+            if ((err = posix_fallocate(ctx->node_cache_fd, 0,
                     sizeof(struct ramNode) * MAXIMUM_INITIAL_ID)) != 0)
             {
                 if (err == ENOSPC) {

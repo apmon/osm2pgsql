@@ -731,8 +731,9 @@ static int pgsql_out_way_single(struct thread_ctx * ctx, struct way_info * way) 
             } else {
                 expire_tiles_from_nodes_line(way->nodes, way->node_count);
                 write_wkts(way->id, way->tags, wkt, &(ctx->tables[t_line]));
-                if (roads)
+                if (roads) {
                     write_wkts(way->id, way->tags, wkt, &(ctx->tables[t_roads]));
+                }
             }
         }
         free(wkt);
@@ -1563,7 +1564,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
         pgsql_pause_copy(&global_tables[t_line]);
         pgsql_pause_copy(&global_tables[t_roads]);
         pgsql_pause_copy(&global_tables[t_poly]);
-        worker_threads = malloc(Options->num_procs * sizeof(pthread_t));
+        worker_threads = calloc(Options->num_procs, sizeof(pthread_t));
         for (i = 0; i < Options->num_procs; i++) {
             int * thread_id = malloc(sizeof(int));
             *thread_id = i + 1; //thread_id is the global_ctx thread.
