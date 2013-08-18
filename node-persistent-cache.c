@@ -648,7 +648,7 @@ void * init_node_persistent_cache(const struct output_options *options, int appe
         {
             #ifdef HAVE_POSIX_FALLOCATE
             if ((err = posix_fallocate(ctx->node_cache_fd, 0,
-                                       sizeof(struct ramNode) * MAXIMUM_INITIAL_ID)) != 0)
+                    sizeof(struct ramNode) * MAXIMUM_INITIAL_ID)) != 0)
             {
                 if (err == ENOSPC) {
                     fprintf(stderr, "Failed to allocate space for node cache file: No space on disk\n");

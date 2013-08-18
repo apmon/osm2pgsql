@@ -157,8 +157,8 @@ const struct output_options *out_options;
 
 static void * pgsql_connect(const struct output_options *options) {
     int i;
-    struct mid_pg_thread_ctx * thread_ctx = malloc(sizeof(struct mid_pg_thread_ctx));
-    struct table_conn * tables_conn = malloc(sizeof(struct table_conn) * num_tables);
+    struct mid_pg_thread_ctx * thread_ctx = calloc(1,sizeof(struct mid_pg_thread_ctx));
+    struct table_conn * tables_conn = calloc(num_tables, sizeof(struct table_conn));
     if (options->flat_node_cache_enabled) thread_ctx->flat_nodes = init_node_persistent_cache(options, 1);
     thread_ctx->conn = tables_conn;
     /* We use a connection per table to enable the use of COPY */
@@ -698,7 +698,7 @@ static int pgsql_ways_set(void * thread_ctxp, osmid_t way_id, osmid_t *nds, int 
     char *paramValues[4];
     char *buffer;
 
-    if ((tables[t_way].copy) && (tables_conn[t_way].copyMode == 0) ) {
+    if ((tables[t_way].copy) && (tables_conn[t_way].copyMode == 0)) {
         pgsql_exec(tables_conn[t_way].sql_conn, PGRES_COPY_IN, "%s", tables[t_way].copy);
         tables_conn[t_way].copyMode = 1;
     }
@@ -1628,8 +1628,8 @@ static void * pgsql_start(const struct output_options *options)
 
     out_options = options;
     
-    global_ctx = malloc(sizeof(struct mid_pg_thread_ctx));
-    global_ctx->conn = malloc(sizeof(struct table_conn) * num_tables);
+    global_ctx = calloc(1,sizeof(struct mid_pg_thread_ctx));
+    global_ctx->conn = calloc(num_tables, sizeof(struct table_conn));
 
     init_node_ram_cache( options->alloc_chunkwise | ALLOC_LOSSY, options->cache, scale);
     if (options->flat_node_cache_enabled) global_ctx->flat_nodes = init_node_persistent_cache(options, options->append);
@@ -1736,10 +1736,10 @@ static void * pgsql_start(const struct output_options *options)
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "DROP TABLE IF EXISTS %s", tables[i].name);
         }
 
-        /*if (tables[i].start) {
+        if (tables[i].start && (options->num_procs == 1)) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", tables[i].start);
-            tables[i].transactionMode = 1;
-        }*/
+            global_ctx->conn[i].transactionMode = 1;
+        }
 
         if (dropcreate && tables[i].create) {
             pgsql_exec(sql_conn, PGRES_COMMAND_OK, "%s", tables[i].create);
