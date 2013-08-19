@@ -331,62 +331,61 @@ static void pgsql_out_cleanup(void * tables_p)
 
 /* Escape data appropriate to the type */
 static void escape_type(char *sql, int len, const char *value, const char *type) {
-  int items;
-  static int tmplen=0;
-  static char *tmpstr;
+    int items;
+    char *tmpstr;
 
-  if (len > tmplen) {
-    tmpstr=realloc(tmpstr,len);
-    tmplen=len;
-  }
-  strcpy(tmpstr,value);
+    tmpstr = malloc(len);
+    strcpy(tmpstr, value);
 
-  if ( !strcmp(type, "int4") ) {
-    int from, to; 
-    /* For integers we take the first number, or the average if it's a-b */
-    items = sscanf(value, "%d-%d", &from, &to);
-    if ( items == 1 ) {
-      sprintf(sql, "%d", from);
-    } else if ( items == 2 ) {
-      sprintf(sql, "%d", (from + to) / 2);
+    if (!strcmp(type, "int4")) {
+        int from, to;
+        /* For integers we take the first number, or the average if it's a-b */
+        items = sscanf(value, "%d-%d", &from, &to);
+        if (items == 1) {
+            sprintf(sql, "%d", from);
+        } else if (items == 2) {
+            sprintf(sql, "%d", (from + to) / 2);
+        } else {
+            sprintf(sql, "\\N");
+        }
     } else {
-      sprintf(sql, "\\N");
-    }
-  } else {
-    /*
-    try to "repair" real values as follows:
-      * assume "," to be a decimal mark which need to be replaced by "."
-      * like int4 take the first number, or the average if it's a-b
-      * assume SI unit (meters)
-      * convert feet to meters (1 foot = 0.3048 meters)
-      * reject anything else    
-    */
-    if ( !strcmp(type, "real") ) {
-      int i,slen;
-      float from,to;
+        /*
+         try to "repair" real values as follows:
+         * assume "," to be a decimal mark which need to be replaced by "."
+         * like int4 take the first number, or the average if it's a-b
+         * assume SI unit (meters)
+         * convert feet to meters (1 foot = 0.3048 meters)
+         * reject anything else
+         */
+        if (!strcmp(type, "real")) {
+            int i, slen;
+            float from, to;
 
-      slen=strlen(value);
-      for (i=0;i<slen;i++) if (tmpstr[i]==',') tmpstr[i]='.';
+            slen = strlen(value);
+            for (i = 0; i < slen; i++)
+                if (tmpstr[i] == ',')
+                    tmpstr[i] = '.';
 
-      items = sscanf(tmpstr, "%f-%f", &from, &to);
-      if ( items == 1 ) {
-	if ((tmpstr[slen-2]=='f') && (tmpstr[slen-1]=='t')) {
-	  from*=0.3048;
-	}
-	sprintf(sql, "%f", from);
-      } else if ( items == 2 ) {
-	if ((tmpstr[slen-2]=='f') && (tmpstr[slen-1]=='t')) {
-	  from*=0.3048;
-	  to*=0.3048;
-	}
-	sprintf(sql, "%f", (from + to) / 2);
-      } else {
-	sprintf(sql, "\\N");
-      }
-    } else {
-      escape(sql, len, value);
+            items = sscanf(tmpstr, "%f-%f", &from, &to);
+            if (items == 1) {
+                if ((tmpstr[slen - 2] == 'f') && (tmpstr[slen - 1] == 't')) {
+                    from *= 0.3048;
+                }
+                sprintf(sql, "%f", from);
+            } else if (items == 2) {
+                if ((tmpstr[slen - 2] == 'f') && (tmpstr[slen - 1] == 't')) {
+                    from *= 0.3048;
+                    to *= 0.3048;
+                }
+                sprintf(sql, "%f", (from + to) / 2);
+            } else {
+                sprintf(sql, "\\N");
+            }
+        } else {
+            escape(sql, len, value);
+        }
     }
-  }
+    free(tmpstr);
 }
 
 static void write_hstore(struct s_table * table, struct keyval *tags)
@@ -962,8 +961,11 @@ static int pgsql_process_relation_single(struct thread_ctx * ctx, struct relatio
   rel_full->member_ids[rel_full->member_count] = 0;
   rel_full->member_roles[rel_full->member_count] = NULL;
 
+  for (i = 0; i < rel->member_count; i++) {
+      free(rel->members[i].role);
+  }
   free(rel->members);
-
+  free(rel);
 
   /* At some point we might want to consider storing the retrieved data in the members, rather than as separate arrays */
   pgsql_out_relation_single(rel_full, ctx);

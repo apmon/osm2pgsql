@@ -206,6 +206,8 @@ static void pgsql_cleanup(void * thread_ctxp)
         shutdown_node_persistent_cache(thread_ctx->flat_nodes);
         thread_ctx->flat_nodes = NULL;
     }
+    free(thread_ctx->conn);
+    free(thread_ctx);
 }
 
 char *pgsql_store_nodes(osmid_t *nds, int nd_count)
@@ -1179,14 +1181,14 @@ static int pgsql_rels_set(void * thread_ctxp, osmid_t id, struct member *members
     sprintf( paramValues[2], "%d", node_count+way_count );
     paramValues[3] = pgsql_store_nodes(all_parts, all_count);
     paramValues[4] = pgsql_store_tags(&member_list,0);
-    if( paramValues[4] )
-        paramValues[4] = strdup(paramValues[4]);
     paramValues[5] = pgsql_store_tags(tags,0);
     pgsql_execPrepared(tables_conn[t_rel].sql_conn, "insert_rel", 6, (const char * const *)paramValues, PGRES_COMMAND_OK);
     if (paramValues[3])
         free(paramValues[3]);
     if( paramValues[4] )
         free(paramValues[4]);
+    if( paramValues[5] )
+            free(paramValues[5]);
     resetList(&member_list);
     return 0;
 }
