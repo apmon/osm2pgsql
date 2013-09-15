@@ -1278,6 +1278,7 @@ static int pgsql_rels_delete(void * thread_ctxp, osmid_t osm_id)
     /* Make sure we're out of copy mode */
     pgsql_endCopy( &(tables_conn[t_way]) );
     pgsql_endCopy( &(tables_conn[t_rel]) );
+    pgsql_endCopy( &(tables_conn[t_way]) );
     
     sprintf( buffer, "%" PRIdOSMID, osm_id );
     paramValues[0] = buffer;

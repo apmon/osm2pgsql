@@ -584,7 +584,7 @@ static int pgsql_out_node(osmid_t id, struct keyval *tags, double node_lat, doub
     }
     
     /* hstore columns */
-    write_hstore_columns(t_point, tags);
+    write_hstore_columns(&(global_tables[t_point]), tags);
     
     /* check if a regular hstore is requested */
     if (Options->enable_hstore)
@@ -787,11 +787,11 @@ static void free_rel_struct(struct relation_info * rel) {
         free( rel->member_roles[i]);
     }
 
-    free(rel->member_ids);
-    free(rel->member_tags);
-    free(rel->member_way_node_count);
-    free(rel->member_way_nodes);
-    free(rel->member_roles);
+    if (rel->member_ids) free(rel->member_ids);
+    if (rel->member_tags) free(rel->member_tags);
+    if (rel->member_way_node_count) free(rel->member_way_node_count);
+    if (rel->member_way_nodes) free(rel->member_way_nodes);
+    if (rel->member_roles) free(rel->member_roles);
     resetList(rel->tags);
     free(rel->tags);
     free(rel);
@@ -917,7 +917,7 @@ static int pgsql_out_relation_single(struct relation_info * rel, struct thread_c
 
 /* This is the workhorse of pgsql_add_relation, split out because it is used as the callback for iterate relations */
 static int pgsql_process_relation_single(struct thread_ctx * ctx, struct relation_info2 * rel) {
-    struct relation_info * rel_full = malloc(sizeof(struct relation_info));
+    struct relation_info * rel_full = calloc(1,sizeof(struct relation_info));
     int i, j, count;
     osmid_t *xid2 = malloc( (rel->member_count+1) * sizeof(osmid_t) );
     int filter;
