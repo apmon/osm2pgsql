@@ -1275,11 +1275,12 @@ static int pgsql_rels_delete(void * thread_ctxp, osmid_t osm_id)
     char buffer[64];
     /* Make sure we're out of copy mode */
     pgsql_endCopy( &(tables_conn[t_rel]) );
+    pgsql_endCopy( &(tables_conn[t_way]) );
     
     sprintf( buffer, "%" PRIdOSMID, osm_id );
     paramValues[0] = buffer;
     
-    pgsql_execPrepared(tables_conn[t_way].>sql_conn, "rel_delete_mark", 1, paramValues, PGRES_COMMAND_OK );
+    pgsql_execPrepared(tables_conn[t_way].sql_conn, "rel_delete_mark", 1, paramValues, PGRES_COMMAND_OK );
     pgsql_execPrepared(tables_conn[t_rel].sql_conn, "delete_rel", 1, paramValues, PGRES_COMMAND_OK );
     return 0;
 }
