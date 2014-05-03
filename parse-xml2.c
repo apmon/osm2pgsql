@@ -100,12 +100,16 @@ static void StartElement(xmlTextReaderPtr reader, const xmlChar *name, struct os
         xid  = xmlTextReaderGetAttribute(reader, BAD_CAST "id");
         xlon = xmlTextReaderGetAttribute(reader, BAD_CAST "lon");
         xlat = xmlTextReaderGetAttribute(reader, BAD_CAST "lat");
-        assert(xid); assert(xlon); assert(xlat);
+        assert(xid);
 
         osmdata->osm_id   = strtoosmid((char *)xid, NULL, 10);
-        osmdata->node_lon = strtod((char *)xlon, NULL);
-        osmdata->node_lat = strtod((char *)xlat, NULL);
         osmdata->action   = ParseAction( reader , osmdata);
+
+        if (osmdata->action != ACTION_DELETE) {
+            assert(xlon); assert(xlat);
+            osmdata->node_lon = strtod((char *)xlon, NULL);
+            osmdata->node_lat = strtod((char *)xlat, NULL);
+        }
 
         if (osmdata->osm_id > osmdata->max_node)
             osmdata->max_node = osmdata->osm_id;
@@ -257,6 +261,12 @@ static void StartElement(xmlTextReaderPtr reader, const xmlChar *name, struct os
         xtmp = xmlTextReaderGetAttribute(reader, BAD_CAST "timestamp");
         if (xtmp) {
 	    addItem(&(osmdata->tags), "osm_timestamp", (char *)xtmp, 0);
+            xmlFree(xtmp);
+        }
+
+        xtmp = xmlTextReaderGetAttribute(reader, BAD_CAST "changeset");
+        if (xtmp) {
+	    addItem(&(osmdata->tags), "osm_changeset", (char *)xtmp, 0);
             xmlFree(xtmp);
         }
     }
