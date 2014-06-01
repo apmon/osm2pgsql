@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import unittest
 import psycopg2
 import os
@@ -28,14 +30,14 @@ sql_test_statements=[
     ( 11, 'Absence of way table', 'SELECT count(*) FROM pg_tables WHERE tablename = \'planet_osm_ways\'', 0),
     ( 12, 'Absence of rel line', 'SELECT count(*) FROM pg_tables WHERE tablename = \'planet_osm_rels\'', 0),
     ( 13, 'Basic polygon area', 'SELECT round(sum(cast(ST_Area(way) as numeric)),0) FROM planet_osm_polygon;', 1223800814),
-    ( 14, 'Gazetteer place count', 'SELECT count(*) FROM place', 4500),
+    ( 14, 'Gazetteer place count', 'SELECT count(*) FROM place', 4499),
     ( 15, 'Gazetteer place node count', 'SELECT count(*) FROM place WHERE osm_type = \'N\'', 779),
-    ( 16, 'Gazetteer place way count', 'SELECT count(*) FROM place WHERE osm_type = \'W\'', 3699),
-    ( 17, 'Gazetteer place rel count', 'SELECT count(*) FROM place WHERE osm_type = \'R\'', 22),
-    ( 18, 'Gazetteer post-diff place count', 'SELECT count(*) FROM place', 4554),
+    ( 16, 'Gazetteer place way count', 'SELECT count(*) FROM place WHERE osm_type = \'W\'', 3697),
+    ( 17, 'Gazetteer place rel count', 'SELECT count(*) FROM place WHERE osm_type = \'R\'', 23),
+    ( 18, 'Gazetteer post-diff place count', 'SELECT count(*) FROM place', 4553),
     ( 19, 'Gazetteer post-diff place node count', 'SELECT count(*) FROM place WHERE osm_type = \'N\'', 788),
-    ( 20, 'Gazetteer post-diff place way count', 'SELECT count(*) FROM place WHERE osm_type = \'W\'', 3744),
-    ( 21, 'Gazetteer post-diff place rel count', 'SELECT count(*) FROM place WHERE osm_type = \'R\'', 22),
+    ( 20, 'Gazetteer post-diff place way count', 'SELECT count(*) FROM place WHERE osm_type = \'W\'', 3742),
+    ( 21, 'Gazetteer post-diff place rel count', 'SELECT count(*) FROM place WHERE osm_type = \'R\'', 23),
     ( 22, 'Gazetteer housenumber count', 'SELECT count(*) FROM place WHERE housenumber is not null', 199),
     ( 23, 'Gazetteer post-diff housenumber count count', 'SELECT count(*) FROM place WHERE housenumber is not null', 199),
     ( 24, 'Gazetteer isin count', 'SELECT count(*) FROM place WHERE isin is not null', 239),
@@ -226,6 +228,7 @@ class NonSlimRenderingTestSuite(unittest.TestSuite):
                                               "testTwo")))
         self.addTest(BasicNonSlimTestCase("basic case",[], [0,1,2,3,10,13, 91, 92]))
         self.addTest(BasicNonSlimTestCase("slim --drop case",["--slim","--drop"], [0,1,2,3, 10, 11, 12, 13, 91, 92]))
+        self.addTest(BasicNonSlimTestCase("Hstore index drop", ["--slim", "--hstore", "--hstore-add-index", "--drop"], [51,52,53,54]))
         self.addTest(BasicNonSlimTestCase("lat lon projection",["-l"], [0,4,5,3,10, 11, 12]))
         #Failing test 3,13 due to difference in handling mixture of tags on ways and relations, where the correct behaviour is non obvious
         #self.addTest(BasicNonSlimTestCase("--tag-transform-script", ["--tag-transform-script", "style.lua"], [0,1,2,3,10,13,91,92]))
@@ -248,6 +251,7 @@ class SlimRenderingTestSuite(unittest.TestSuite):
         self.addTest(BasicSlimTestCase("Hstore name column", ["-z", "name:"], [0,1,2,3],[6,7,8,9]))
         self.addTest(BasicSlimTestCase("Hstore", ["-k"], [51,52,53,54],[55,56,57,58]))
         self.addTest(BasicSlimTestCase("Hstore all", ["-j"], [51,52,53,54,93,94,95,96],[55,56,57,58, 97, 98, 99, 100]))
+        self.addTest(BasicSlimTestCase("Hstore index", ["--hstore", "--hstore-add-index"], [51,52,53,54],[55,56,57,58]))        
         #tests dont check for osm_timestamp which is currently missing in the pbf parser
         self.addTest(BasicSlimTestCase("Extra tags hstore match only", ["-x", "-k", "--hstore-match-only"], [0,1,2,3],[6,7,8,9]))
         self.addTest(BasicSlimTestCase("Extra tags hstore all", ["-j", "-x"], [51,52,53,54,59,60,61],[55,56,57,58]))
@@ -367,28 +371,34 @@ class BaseTestCase(unittest.TestCase):
 class BaseNonSlimTestCase(BaseTestCase):
     
     def setUpGeneric(self, parameters, file):
-        returncode = subprocess.call(["./osm2pgsql", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [full_import_file])
-        self.assertEqual( returncode, 0, "Execution of osm2pgsql with options: " + str(parameters) + " failed")
+        proc = subprocess.Popen(["./osm2pgsql", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [full_import_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outp, outerr) = proc.communicate()
+        self.assertEqual (proc.returncode, 0, "Execution of osm2pgsql with options: '%s' failed:\n%s\n%s\n" % (str(parameters), outp, outerr))
 
 class BaseSlimTestCase(BaseTestCase):    
         
     def setUpGeneric(self, parameters, file):
-        returncode = subprocess.call(["./osm2pgsql", "--slim", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file])
-        self.assertEqual( returncode, 0, "Execution of osm2pgsql --slim with options: " + str(parameters) + " failed")
+        proc = subprocess.Popen(["./osm2pgsql", "--slim", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outp, outerr) = proc.communicate()
+        self.assertEqual (proc.returncode, 0, "Execution of osm2pgsql --slim with options: '%s' failed:\n%s\n%s\n" % (str(parameters), outp, outerr))
 
     def updateGeneric(self, parameters, file):
-        returncode = subprocess.call(["./osm2pgsql", "--slim", "--append", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file])
-        self.assertEqual( returncode, 0, "Execution of osm2pgsql --slim --append with options: " + str(parameters) + " failed")
-
+        proc = subprocess.Popen(["./osm2pgsql", "--slim", "--append", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outp, outerr) = proc.communicate()
+        self.assertEqual (proc.returncode, 0, "Execution of osm2pgsql --slim --append with options: '%s' failed:\n%s\n%s\n" % (str(parameters), outp, outerr))
+        
 class BaseGazetteerTestCase(BaseTestCase):    
         
     def setUpGeneric(self, parameters, file):
-        returncode = subprocess.call(["./osm2pgsql", "--slim", "-Ogazetteer", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file])
-        self.assertEqual( returncode, 0, "Execution of osm2pgsql --slim -Ogazetteer with options: " + str(parameters) + " failed")
+        proc = subprocess.Popen(["./osm2pgsql", "--slim", "-Ogazetteer", "-Sdefault.style", "-dosm2pgsql-test"] + parameters + [file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outp, outerr) = proc.communicate()
+        self.assertEqual (proc.returncode, 0, "Execution of osm2pgsql --slim gazetteer options: '%s' failed:\n%s\n%s\n" % (str(parameters), outp, outerr))
 
     def updateGeneric(self, parameters, file):
-        returncode = subprocess.call(["./osm2pgsql", "--slim", "-Ogazetteer", "--append", "-Sdefault.style", "-dosm2pgsql-test", "-C100"] + parameters + [file])
-        self.assertEqual( returncode, 0, "Execution of osm2pgsql --slim -Ogazetteer --append with options: " + str(parameters) + " failed")
+        proc = subprocess.Popen(["./osm2pgsql", "--slim", "-Ogazetteer", "--append", "-Sdefault.style", "-dosm2pgsql-test"] + parameters + [file], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outp, outerr) = proc.communicate()
+        self.assertEqual (proc.returncode, 0, "Execution of osm2pgsql --slim --append gazetteer options: '%s' failed:\n%s\n%s\n" % (str(parameters), outp, outerr))
+        
 
 #****************************************************************
 class BasicNonSlimTestCase(BaseNonSlimTestCase):
@@ -524,7 +534,7 @@ def setupDB():
                 print "We already have a tablespace, can use that"
                 created_tablespace = 0
             else:
-                print "For the test, we need to create a tablespace. This needs root privilidges"
+                print "For the test, we need to create a tablespace. This needs root privileges"
                 created_tablespace = 1
                 ### This makes postgresql read from /tmp
                 ## Does this have security implications like opening this to a possible symlink attack?
@@ -594,6 +604,19 @@ def tearDownDB():
     if (created_tablespace == 1):
         returncode = subprocess.call(["/usr/bin/sudo", "/bin/rmdir", "/tmp/psql-tablespace"])
 
+
+if __name__ == "__main__":
+
+    from optparse import OptionParser
+
+    parser = OptionParser()
+    parser.add_option("-f", dest="osm_file", action="store", metavar="FILE",
+                      default=full_import_file,
+                      help="Import a specific osm file [default=%default]")
+    (options, args) = parser.parse_args()
+
+    if options.osm_file:
+        full_import_file = options.osm_file
 
 
 ts2 = CompleteTestSuite()

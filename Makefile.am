@@ -61,3 +61,7 @@ rpm: dist-gzip
 distclean-local:
 	@rm -f $(PACKAGE).spec
 	@rm -f config.nice
+
+test:
+	tests/regression-test.py -f tests/liechtenstein-2013-08-03.osm.pbf
+	tests/regression-test.py -f tests/liechtenstein-2013-08-03.osm.bz2

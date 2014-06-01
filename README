@@ -33,7 +33,7 @@ Features
 - Converts OSM files to a PostgreSQL DB
 - Conversion of tags to columns is configurable in the style file
 - Able to read .gz, .bz2, .pbf and .o5m files directly
-- Can apply diffs to keep the database up to data
+- Can apply diffs to keep the database up to date
 - Support the choice of output projection
 - Configurable table names
 - Gazetteer back-end for Nominatim
@@ -74,7 +74,7 @@ e.g. on Fedora:
 # yum install geos-devel proj-devel postgresql-devel libxml2-devel bzip2-devel gcc-c++
 
 on Debian:
-# aptitude install libxml2-dev libgeos-dev libgeos++-dev libpq-dev libbz2-dev libproj-dev protobuf-c-compiler libprotobuf-c0-dev autoconf automake libtool make g++
+# aptitude install libxml2-dev libgeos-dev libgeos++-dev libpq-dev libbz2-dev libproj-dev protobuf-c-compiler libprotobuf-c0-dev autoconf automake libtool make g++ libbz2-dev
 
 To use lua tag transforms you need a lua interpreter and development packages installed on your system. These are normally lua5.2 and liblua5.2-dev
 
@@ -105,7 +105,7 @@ on many Unix installs but does not work on Windows (due to the
 lack of unix sockets).
 
 Some example commands are given below but you may find
-this wiki page has more up to data information:
+this wiki page has more up to date information:
 http://wiki.openstreetmap.org/wiki/Mapnik/PostGIS
 
 $ sudo -u postgres createuser <username>
