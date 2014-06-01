@@ -1245,7 +1245,6 @@ static int gazetteer_process_relation(osmid_t id, struct member *members, int me
    int wkt_size;
    const char *type;
    int cmp_waterway;
-   void * geom_ctx;
 
    type = getItem(tags, "type");
    if (!type) {
