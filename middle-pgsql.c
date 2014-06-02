@@ -169,6 +169,8 @@ static void * pgsql_connect(const struct output_options *options) {
         /* Check to see that the backend connection was successfully made */
         if (PQstatus(sql_conn) != CONNECTION_OK) {
             fprintf(stderr, "Connection to database failed: %s\n", PQerrorMessage(sql_conn));
+            free(thread_ctx->conn);
+            free(thread_ctx);
             return NULL;
         }
         tables_conn[i].desc = &(tables[i]);
@@ -712,8 +714,12 @@ static int pgsql_ways_set(void * thread_ctxp, osmid_t way_id, osmid_t *nds, int 
       int length = strlen(tag_buf) + strlen(node_buf) + 64;
       buffer = alloca(length);
       if( snprintf( buffer, length, "%" PRIdOSMID "\t%s\t%s\t%c\n", 
-              way_id, node_buf, tag_buf, pending?'t':'f' ) > (length-10) )
-      { fprintf( stderr, "buffer overflow way id %" PRIdOSMID "\n", way_id); return 1; }
+              way_id, node_buf, tag_buf, pending?'t':'f' ) > (length-10) ) {
+    	  free(node_buf);
+    	      	  free(tag_buf);
+    	  fprintf( stderr, "buffer overflow way id %" PRIdOSMID "\n", way_id);
+    	  return 1;
+      }
       free(node_buf);
       free(tag_buf);
 
@@ -1166,8 +1172,14 @@ static int pgsql_rels_set(void * thread_ctxp, osmid_t id, struct member *members
       int length = strlen(member_buf) + strlen(tag_buf) + strlen(parts_buf) + 64;
       buffer = alloca(length);
       if( snprintf( buffer, length, "%" PRIdOSMID "\t%d\t%d\t%s\t%s\t%s\tf\n", 
-              id, node_count, node_count+way_count, parts_buf, member_buf, tag_buf ) > (length-10) )
-      { fprintf( stderr, "buffer overflow relation id %" PRIdOSMID "\n", id); return 1; }
+              id, node_count, node_count+way_count, parts_buf, member_buf, tag_buf ) > (length-10) ) {
+    	  fprintf( stderr, "buffer overflow relation id %" PRIdOSMID "\n", id);
+    	  free(tag_buf);
+    	  free(member_buf);
+    	  free(parts_buf);
+    	  resetList(&member_list);
+    	  return 1;
+      }
       free(tag_buf);
       free(member_buf);
       free(parts_buf);

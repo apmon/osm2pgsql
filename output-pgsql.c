@@ -770,11 +770,18 @@ static int pgsql_add_way_single(struct thread_ctx * ctx, struct way_info2 * way)
     pgsql_out_way_single(ctx, way_full);
 
   } else {
-      resetList(way->tags);
-      free(way->tags);
+      if (way->tags) {
+          resetList(way->tags);
+          free(way->tags);
+          way->tags = NULL;
+      } else {
+          printf("Trying to reset non-existing tags list.\n");
+      }
   }
   free(way->nds);
+  way->nds = NULL;
   free(way);
+  way = NULL;
 
   return 0;
 }
@@ -937,6 +944,7 @@ static int pgsql_process_relation_single(struct thread_ctx * ctx, struct relatio
 
   if (tagtransform_filter_rel_tags(ctx->tagtransform_ctx, rel->tags)) {
       free_rel_struct(rel_full);
+      free(xid2);
       return 1;
   }
 
@@ -1066,14 +1074,14 @@ static int pgsql_out_way(osmid_t id, struct keyval *tags, struct osmNode *nodes,
     int i;
     struct way_info * way;
     //Create a worker package to put in the queue.
-    way = (struct way_info *)malloc(sizeof(struct way_info));
+    way = (struct way_info *)calloc(1,sizeof(struct way_info));
     way->id = id;
     /* We need to duplicate the tags structure here, as the calling function of pgsql_out_way
      * currently assumes it can free the tags. However, they can only be freed once the worker
      * threads have actually finished the processing after which they will free the tags structure
      * of the work package.
      */
-    way->tags = malloc(sizeof(struct keyval));
+    way->tags = calloc(1,sizeof(struct keyval));
     initList(way->tags);
     cloneList(way->tags, tags);
     way->nodes = nodes;
@@ -1622,7 +1630,7 @@ static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *
     way->nd_count = nd_count;
     way->nds = malloc(sizeof(osmid_t) * nd_count);
     memcpy(way->nds, nds, sizeof(osmid_t) * nd_count);
-    way->tags = malloc(sizeof(struct keyval));
+    way->tags = calloc(1,sizeof(struct keyval));
     initList(way->tags);
     cloneList(way->tags, tags);
 

@@ -107,6 +107,9 @@ void text_release(struct tree_context *context, const char *text)
         if (node) { //TODO: fixme remove
             fprintf(stderr, "not repeatable error\n");
         } fprintf(stderr,"still failed\n");
+#ifdef HAVE_PTHREAD
+        pthread_spin_unlock(&lock_text_tree);
+#endif
         return;
     }
     node->ref--;

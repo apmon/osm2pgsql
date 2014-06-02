@@ -42,8 +42,18 @@ void freeItem(struct keyval *p)
         text_release(tree_ctx, p->key);
         text_release(tree_ctx, p->value);
     } else {
-        free(p->key);
-        free(p->value);
+        if (p->key) {
+            free(p->key);
+            p->key = NULL;
+        } else {
+            printf("Trying to free null key!\n");
+        }
+        if (p->value) {
+            free(p->value);
+            p->value = NULL;
+        } else {
+            printf("Trying to free null value!\n");
+        }
     }
     free(p);
 }
@@ -242,7 +252,7 @@ int addItem(struct keyval *head, const char *name, const char *value, int noDupe
         }
     }
 
-    item = malloc(sizeof(struct keyval));
+    item = calloc(1,sizeof(struct keyval));
 
     if (!item) {
         fprintf(stderr, "Error allocating keyval\n");
