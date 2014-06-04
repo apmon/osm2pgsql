@@ -53,6 +53,7 @@ struct way_info2 {
     osmid_t id;
     osmid_t *nds;
     int nd_count;
+    int processed; //temporary debug flag to try and track down a thread safety issue.
     struct keyval *tags;
 };
 

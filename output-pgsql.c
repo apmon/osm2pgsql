@@ -995,6 +995,7 @@ static void * pgsql_worker_thread(void * pointer) {
     int * thread_id = pointer;
 
 
+    printf("Started thread with id: %li\n", pthread_self());
     /*
      * We need a new set of connections to postgresql in this thread
      */
@@ -1027,11 +1028,17 @@ static void * pgsql_worker_thread(void * pointer) {
             ways_buffer_pfirst++;
             if (ways_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) ways_buffer_pfirst = 0; // circular buffer wrap around
             way_inflight |= ((uint64_t)1 << *thread_id); //We will likely have written a way to the middle layer, so we need to remember to flush it before moving on.
+            if (way->processed != 0) {
+            	printf("ERROR!!!!! Double processing %li!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n", way->id);
+            	continue;
+            }
+            way->processed = 1;
         } else {
             rel = rels_buffer[rels_buffer_pfirst];
             rels_buffer_pfirst++;
             if (rels_buffer_pfirst > (WORKER_THREAD_QUEUE_SIZE - 1)) rels_buffer_pfirst = 0; // circular buffer wrap around
         }
+
         pthread_mutex_unlock(&lock_worker_queue);
         pthread_cond_signal(&cond_worker_queue_space_available);
         if (way) pgsql_add_way_single(&ctx, way);
@@ -1601,7 +1608,7 @@ static int pgsql_add_node(osmid_t id, double lat, double lon, struct keyval *tag
 
 
 static int pgsql_add_way(osmid_t id, osmid_t *nds, int nd_count, struct keyval *tags){
-    struct way_info2 * way = malloc(sizeof(struct way_info2));
+    struct way_info2 * way = calloc(1,sizeof(struct way_info2));
     int i;
 
 #ifdef HAVE_PTHREAD
